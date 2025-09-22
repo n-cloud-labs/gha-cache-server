@@ -23,15 +23,19 @@ hyper-util = { version = "0.1.6", features = ["client", "client-legacy", "http1"
 pin-project-lite = { version = "0.2" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1" }
+sha2 = { version = "0.10" }
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono", "migrate"] }
 sync_wrapper = { version = "1" }
 thiserror = { version = "2" }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread", "signal"] }
 tower = { version = "0.5", features = ["timeout", "limit"] }
 tracing = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 url = { version = "2" }
 uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tempfile = { version = "3" }
 
 
 [profile.release]

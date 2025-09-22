@@ -11,9 +11,11 @@ use sqlx::postgres::PgPoolOptions;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 
+use anyhow::Context;
+
 use crate::http::build_router;
-use config::Config;
-use storage::{BlobStore, s3::S3Store};
+use config::{BlobStoreSelector, Config};
+use storage::{BlobStore, fs::FsStore, s3::S3Store};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -27,16 +29,31 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
 
-    // S3 / MinIO
-    let store: Arc<dyn BlobStore> = Arc::new(
-        S3Store::new(
-            cfg.s3_bucket.clone(),
-            cfg.aws_region.clone(),
-            cfg.aws_endpoint_url.clone(),
-            cfg.force_path_style,
-        )
-        .await?,
-    );
+    // Storage backend
+    let store: Arc<dyn BlobStore> = match cfg.blob_store {
+        BlobStoreSelector::S3 => {
+            let s3_cfg = cfg
+                .s3
+                .as_ref()
+                .context("missing S3 configuration for selected backend")?;
+            Arc::new(
+                S3Store::new(
+                    s3_cfg.bucket.clone(),
+                    s3_cfg.region.clone(),
+                    s3_cfg.endpoint_url.clone(),
+                    s3_cfg.force_path_style,
+                )
+                .await?,
+            )
+        }
+        BlobStoreSelector::Fs => {
+            let fs_cfg = cfg
+                .fs
+                .as_ref()
+                .context("missing filesystem configuration for selected backend")?;
+            Arc::new(FsStore::new(fs_cfg.root.clone(), fs_cfg.file_mode, fs_cfg.dir_mode).await?)
+        }
+    };
 
     // Router
     let app: Router = build_router(pool, store, &cfg);
