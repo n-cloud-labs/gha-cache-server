@@ -4,7 +4,6 @@ use std::time::Duration;
 pub struct Config {
     pub port: u16,
     pub enable_direct_downloads: bool,
-    #[allow(dead_code)]
     pub request_timeout: Duration,
     pub max_concurrency: usize,
 
