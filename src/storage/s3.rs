@@ -5,8 +5,13 @@ use aws_sdk_s3::{
     config::{Builder as S3ConfigBuilder, Region},
     types::{CompletedMultipartUpload, CompletedPart},
 };
-use axum::body::{Body, to_bytes};
+use aws_smithy_types::body::Error as SdkBodyError;
+use axum::body::Body;
+use futures::TryStreamExt;
+use http_body::Frame;
+use pin_project_lite::pin_project;
 use std::time::Duration;
+use sync_wrapper::SyncWrapper;
 
 use crate::storage::{BlobStore, PresignedUrl};
 
@@ -38,8 +43,49 @@ impl S3Store {
         Ok(Self { client, bucket })
     }
 
-    pub async fn bytestream_from_reader(r: Body) -> Result<ByteStream, axum::Error> {
-        Ok(ByteStream::from(to_bytes(r, usize::MAX).await?))
+    pub fn bytestream_from_reader(r: Body) -> ByteStream {
+        let stream = r
+            .into_data_stream()
+            .map_err(|err| -> SdkBodyError { err.into() });
+        ByteStream::from_body_1_x(SyncDataBody::new(stream))
+    }
+}
+
+pin_project! {
+    struct SyncDataBody<S> {
+        #[pin]
+        stream: SyncWrapper<S>,
+    }
+}
+
+impl<S> SyncDataBody<S> {
+    fn new(stream: S) -> Self {
+        Self {
+            stream: SyncWrapper::new(stream),
+        }
+    }
+}
+
+impl<S, E> http_body::Body for SyncDataBody<S>
+where
+    S: futures::Stream<Item = Result<bytes::Bytes, E>> + Send,
+    E: Into<SdkBodyError> + 'static,
+{
+    type Data = bytes::Bytes;
+    type Error = E;
+
+    fn poll_frame(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        match self.project().stream.get_pin_mut().poll_next(cx) {
+            std::task::Poll::Ready(Some(Ok(bytes))) => {
+                std::task::Poll::Ready(Some(Ok(Frame::data(bytes))))
+            }
+            std::task::Poll::Ready(Some(Err(err))) => std::task::Poll::Ready(Some(Err(err))),
+            std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
     }
 }
 
@@ -111,5 +157,52 @@ impl BlobStore for S3Store {
         let presigned = req.presigned(PresigningConfig::expires_in(ttl)?).await?;
         let url: url::Url = presigned.uri().to_string().parse()?;
         Ok(Some(PresignedUrl { url }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::S3Store;
+    use axum::body::Body;
+    use bytes::Bytes;
+    use futures::stream;
+    use std::convert::Infallible;
+    use std::error::Error as _;
+    use std::io;
+
+    #[tokio::test]
+    async fn bytestream_from_reader_streams_large_payloads() {
+        let chunk = Bytes::from(vec![42u8; 128 * 1024]);
+        let chunk_len = chunk.len();
+        let chunks = 64;
+        let chunk_for_stream = chunk.clone();
+        let body = Body::from_stream(stream::iter(
+            (0..chunks).map(move |_| Ok::<_, Infallible>(chunk_for_stream.clone())),
+        ));
+
+        let collected = S3Store::bytestream_from_reader(body)
+            .collect()
+            .await
+            .expect("collect succeeds")
+            .into_bytes();
+
+        assert_eq!(collected.len(), chunk_len * chunks);
+        assert!(collected.iter().all(|&b| b == 42));
+    }
+
+    #[tokio::test]
+    async fn bytestream_from_reader_propagates_stream_errors() {
+        let body = Body::from_stream(stream::iter([
+            Ok::<_, io::Error>(Bytes::from_static(b"ok")),
+            Err(io::Error::other("boom")),
+        ]));
+
+        let err = S3Store::bytestream_from_reader(body)
+            .collect()
+            .await
+            .expect_err("collect should report stream error");
+
+        let source = err.source().expect("streaming error should expose source");
+        assert!(source.to_string().contains("boom"));
     }
 }

@@ -203,9 +203,7 @@ pub async fn upload_chunk(
     // We don't actually need offsets here because we map each PATCH to an S3 part in order.
     let next_part = 1 + meta::get_parts(&st.pool, &rec.upload_id).await?.len() as i32;
 
-    let bs = S3Store::bytestream_from_reader(body)
-        .await
-        .map_err(|e| ApiError::Internal(format!("{e}")))?;
+    let bs = S3Store::bytestream_from_reader(body);
     let etag = st
         .store
         .upload_part(&rec.storage_key, &rec.upload_id, next_part, bs)
