@@ -207,7 +207,7 @@ mod tests {
             _key: &str,
             _upload_id: &str,
             _part_number: i32,
-            _body: aws_sdk_s3::primitives::ByteStream,
+            _body: crate::storage::BlobUploadPayload,
         ) -> anyhow::Result<String> {
             unimplemented!("not required for tests")
         }

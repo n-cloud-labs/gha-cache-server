@@ -2,12 +2,10 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use uuid::Uuid;
 
+use crate::api::upload::body_to_blob_payload;
+use crate::error::{ApiError, Result};
 use crate::http::AppState;
 use crate::meta;
-use crate::{
-    error::{ApiError, Result},
-    storage::s3::S3Store,
-};
 
 // PUT /upload/{cache-id}
 // Compatibility handler some forks rely on. Treats the whole body as a single part.
@@ -21,7 +19,7 @@ pub async fn put_upload(
         .fetch_one(&st.pool).await?;
 
     let part_no = 1 + meta::get_parts(&st.pool, &rec.upload_id).await?.len() as i32;
-    let bs = S3Store::bytestream_from_reader(body);
+    let bs = body_to_blob_payload(body);
     let etag = st
         .store
         .upload_part(&rec.storage_key, &rec.upload_id, part_no, bs)

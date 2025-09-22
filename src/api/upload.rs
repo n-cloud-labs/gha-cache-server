@@ -5,6 +5,7 @@ use axum::{
 };
 use base64::{Engine as _, engine::general_purpose};
 use chrono::{DateTime, Utc};
+use futures::{StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use uuid::Uuid;
@@ -13,8 +14,7 @@ use crate::http::AppState;
 use crate::meta;
 use crate::{
     error::{ApiError, Result},
-    storage::BlobStore,
-    storage::s3::S3Store,
+    storage::{BlobStore, BlobUploadPayload},
 };
 
 const MAX_CACHE_KEY_LENGTH: usize = 512;
@@ -203,7 +203,7 @@ pub async fn upload_chunk(
     // We don't actually need offsets here because we map each PATCH to an S3 part in order.
     let next_part = 1 + meta::get_parts(&st.pool, &rec.upload_id).await?.len() as i32;
 
-    let bs = S3Store::bytestream_from_reader(body);
+    let bs = body_to_blob_payload(body);
     let etag = st
         .store
         .upload_part(&rec.storage_key, &rec.upload_id, next_part, bs)
@@ -212,6 +212,10 @@ pub async fn upload_chunk(
     meta::add_part(&st.pool, &rec.upload_id, next_part, &etag).await?;
 
     Ok(StatusCode::OK)
+}
+
+pub(crate) fn body_to_blob_payload(body: axum::body::Body) -> BlobUploadPayload {
+    body.into_data_stream().map_err(anyhow::Error::from).boxed()
 }
 
 // ====== actions/cache: POST /_apis/artifactcache/caches/:id { size } ======
@@ -245,7 +249,7 @@ pub async fn commit_cache(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{BlobStore, PresignedUrl};
+    use crate::storage::{BlobStore, BlobUploadPayload, PresignedUrl};
     use async_trait::async_trait;
     use std::sync::{
         Arc,
@@ -283,7 +287,7 @@ mod tests {
             _key: &str,
             _upload_id: &str,
             _part_number: i32,
-            _body: aws_sdk_s3::primitives::ByteStream,
+            _body: BlobUploadPayload,
         ) -> anyhow::Result<String> {
             unimplemented!("not required for tests")
         }
