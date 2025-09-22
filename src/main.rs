@@ -8,7 +8,7 @@ mod storage;
 
 use axum::Router;
 use sqlx::postgres::PgPoolOptions;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use tower::limit::ConcurrencyLimitLayer;
 
@@ -43,7 +43,7 @@ async fn main() -> anyhow::Result<()> {
     let app: Router =
         build_router(pool, store, &cfg).layer(ConcurrencyLimitLayer::new(cfg.max_concurrency));
 
-    let addr: SocketAddr = ([0, 0, 0, 0], cfg.port).into();
+    let addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), cfg.port);
     tracing::info!(%addr, "listening");
     axum::serve(tokio::net::TcpListener::bind(addr).await?, app).await?;
     Ok(())
