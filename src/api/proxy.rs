@@ -31,6 +31,12 @@ pub struct HyperProxyClient {
     inner: Client<hyper_rustls::HttpsConnector<HttpConnector>, Body>,
 }
 
+impl Default for HyperProxyClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HyperProxyClient {
     pub fn new() -> Self {
         let https = HttpsConnectorBuilder::new()

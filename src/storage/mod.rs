@@ -3,6 +3,7 @@ use bytes::Bytes;
 use futures::stream::BoxStream;
 use std::time::Duration;
 
+pub mod fs;
 pub mod s3;
 
 pub struct PresignedUrl {

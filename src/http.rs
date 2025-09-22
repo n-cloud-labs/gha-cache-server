@@ -123,7 +123,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::api::proxy::{self, ProxyHttpClient, RESULTS_RECEIVER_ORIGIN};
-    use crate::config::Config;
+    use crate::config::{BlobStoreSelector, Config, S3Config};
     use crate::storage::{BlobStore, PresignedUrl};
 
     #[derive(Clone, Debug)]
@@ -237,10 +237,14 @@ mod tests {
             request_timeout: Duration::from_secs(30),
             max_concurrency: 16,
             database_url: "postgres://localhost/test".into(),
-            s3_bucket: "bucket".into(),
-            aws_region: "us-east-1".into(),
-            aws_endpoint_url: None,
-            force_path_style: true,
+            blob_store: BlobStoreSelector::S3,
+            s3: Some(S3Config {
+                bucket: "bucket".into(),
+                region: "us-east-1".into(),
+                endpoint_url: None,
+                force_path_style: true,
+            }),
+            fs: None,
         }
     }
 
