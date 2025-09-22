@@ -6,14 +6,16 @@ use aws_sdk_s3::{
     types::{CompletedMultipartUpload, CompletedPart},
 };
 use aws_smithy_types::body::Error as SdkBodyError;
-use axum::body::Body;
 use futures::TryStreamExt;
 use http_body::Frame;
 use pin_project_lite::pin_project;
 use std::time::Duration;
 use sync_wrapper::SyncWrapper;
 
-use crate::storage::{BlobStore, PresignedUrl};
+#[cfg(test)]
+use axum::body::Body;
+
+use crate::storage::{BlobStore, BlobUploadPayload, PresignedUrl};
 
 #[derive(Clone)]
 pub struct S3Store {
@@ -43,10 +45,19 @@ impl S3Store {
         Ok(Self { client, bucket })
     }
 
+    #[cfg(test)]
     pub fn bytestream_from_reader(r: Body) -> ByteStream {
         let stream = r
             .into_data_stream()
             .map_err(|err| -> SdkBodyError { err.into() });
+        Self::bytestream_from_stream(stream)
+    }
+
+    fn bytestream_from_stream<S, E>(stream: S) -> ByteStream
+    where
+        S: futures::Stream<Item = Result<bytes::Bytes, E>> + Send + 'static,
+        E: Into<SdkBodyError> + 'static,
+    {
         ByteStream::from_body_1_x(SyncDataBody::new(stream))
     }
 }
@@ -107,8 +118,9 @@ impl BlobStore for S3Store {
         key: &str,
         upload_id: &str,
         part_number: i32,
-        body: ByteStream,
+        body: BlobUploadPayload,
     ) -> anyhow::Result<String> {
+        let body = Self::bytestream_from_stream(body.map_err(|err| -> SdkBodyError { err.into() }));
         let out = self
             .client
             .upload_part()
