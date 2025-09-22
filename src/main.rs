@@ -15,7 +15,7 @@ use anyhow::Context;
 
 use crate::http::build_router;
 use config::{BlobStoreSelector, Config};
-use storage::{BlobStore, fs::FsStore, s3::S3Store};
+use storage::{BlobStore, fs::FsStore, gcs::GcsStore, s3::S3Store};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -52,6 +52,13 @@ async fn main() -> anyhow::Result<()> {
                 .as_ref()
                 .context("missing filesystem configuration for selected backend")?;
             Arc::new(FsStore::new(fs_cfg.root.clone(), fs_cfg.file_mode, fs_cfg.dir_mode).await?)
+        }
+        BlobStoreSelector::Gcs => {
+            let gcs_cfg = cfg
+                .gcs
+                .as_ref()
+                .context("missing GCS configuration for selected backend")?;
+            Arc::new(GcsStore::new(gcs_cfg.clone()).await?)
         }
     };
 

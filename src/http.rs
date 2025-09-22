@@ -245,6 +245,7 @@ mod tests {
                 force_path_style: true,
             }),
             fs: None,
+            gcs: None,
         }
     }
 
