@@ -21,9 +21,7 @@ pub async fn put_upload(
         .fetch_one(&st.pool).await?;
 
     let part_no = 1 + meta::get_parts(&st.pool, &rec.upload_id).await?.len() as i32;
-    let bs = S3Store::bytestream_from_reader(body)
-        .await
-        .map_err(|e| ApiError::Internal(format!("{e}")))?;
+    let bs = S3Store::bytestream_from_reader(body);
     let etag = st
         .store
         .upload_part(&rec.storage_key, &rec.upload_id, part_no, bs)
