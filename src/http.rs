@@ -1,9 +1,17 @@
 use axum::{
     Router,
+    error_handling::HandleErrorLayer,
+    http::StatusCode,
     routing::{get, patch, post, put},
 };
 use sqlx::PgPool;
+use std::convert::Infallible;
 use std::sync::Arc;
+use tower::{
+    ServiceBuilder,
+    limit::ConcurrencyLimitLayer,
+    timeout::{TimeoutLayer, error::Elapsed},
+};
 
 use crate::api::{download, proxy, twirp, upload, upload_compat};
 use crate::config::Config;
@@ -78,6 +86,24 @@ pub(crate) fn build_router_with_proxy(
         .route("/upload/:cache_id", put(upload_compat::put_upload))
         .fallback(proxy::proxy_unknown)
         .with_state(app_state)
+        .layer(
+            ServiceBuilder::new()
+                .layer(ConcurrencyLimitLayer::new(cfg.max_concurrency))
+                .layer(HandleErrorLayer::new(|error: axum::BoxError| async move {
+                    if error.is::<Elapsed>() {
+                        tracing::warn!("request timed out");
+                        Ok::<_, Infallible>((StatusCode::REQUEST_TIMEOUT, "request timed out"))
+                    } else {
+                        tracing::error!(%error, "unhandled middleware error");
+                        Ok::<_, Infallible>((
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "unhandled internal error",
+                        ))
+                    }
+                }))
+                .layer(TimeoutLayer::new(cfg.request_timeout))
+                .into_inner(),
+        )
 }
 
 #[cfg(test)]
