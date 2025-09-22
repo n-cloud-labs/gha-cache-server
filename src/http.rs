@@ -3,19 +3,20 @@ use axum::{
     routing::{get, patch, post, put},
 };
 use sqlx::PgPool;
+use std::sync::Arc;
 
 use crate::api::{download, twirp, upload, upload_compat};
 use crate::config::Config;
-use crate::storage::s3::S3Store;
+use crate::storage::BlobStore;
 
 #[derive(Clone)]
 pub struct AppState {
     pub pool: PgPool,
-    pub store: S3Store,
+    pub store: Arc<dyn BlobStore>,
     pub enable_direct: bool,
 }
 
-pub fn build_router(pool: PgPool, store: S3Store, cfg: &Config) -> Router {
+pub fn build_router(pool: PgPool, store: Arc<dyn BlobStore>, cfg: &Config) -> Router {
     let app_state = AppState {
         pool: pool.clone(),
         store,
@@ -28,7 +29,10 @@ pub fn build_router(pool: PgPool, store: S3Store, cfg: &Config) -> Router {
         // GET lookup
         .route("/_apis/artifactcache/cache", get(upload::get_cache_entry))
         // POST reserve
-        .route("/_apis/artifactcache/caches", post(upload::reserve_cache))
+        .route(
+            "/_apis/artifactcache/caches",
+            get(upload::list_caches).post(upload::reserve_cache),
+        )
         // PATCH chunks
         .route(
             "/_apis/artifactcache/caches/:id",

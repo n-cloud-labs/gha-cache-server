@@ -6,7 +6,6 @@ use crate::http::AppState;
 use crate::meta;
 use crate::{
     error::{ApiError, Result},
-    storage::BlobStore,
     storage::s3::S3Store,
 };
 

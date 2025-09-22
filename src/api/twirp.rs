@@ -4,12 +4,9 @@ use base64::engine::general_purpose;
 use uuid::Uuid;
 
 use super::types::*;
+use crate::error::{ApiError, Result};
 use crate::http::AppState;
 use crate::meta;
-use crate::{
-    error::{ApiError, Result},
-    storage::BlobStore,
-};
 
 // POST /twirp/.../CreateCacheEntry
 pub async fn create_cache_entry(
