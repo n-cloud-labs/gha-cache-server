@@ -4,7 +4,7 @@ use axum::{
     http::StatusCode,
     routing::{get, patch, post, put},
 };
-use sqlx::PgPool;
+use sqlx::AnyPool;
 use std::convert::Infallible;
 use std::sync::Arc;
 use tower::{
@@ -19,20 +19,20 @@ use crate::storage::BlobStore;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub pool: PgPool,
+    pub pool: AnyPool,
     pub store: Arc<dyn BlobStore>,
     pub enable_direct: bool,
     pub proxy_client: Arc<dyn proxy::ProxyHttpClient>,
 }
 
-pub fn build_router(pool: PgPool, store: Arc<dyn BlobStore>, cfg: &Config) -> Router {
+pub fn build_router(pool: AnyPool, store: Arc<dyn BlobStore>, cfg: &Config) -> Router {
     let proxy_client: Arc<dyn proxy::ProxyHttpClient> = Arc::new(proxy::HyperProxyClient::new());
 
     build_router_with_proxy(pool, store, cfg, proxy_client)
 }
 
 pub(crate) fn build_router_with_proxy(
-    pool: PgPool,
+    pool: AnyPool,
     store: Arc<dyn BlobStore>,
     cfg: &Config,
     proxy_client: Arc<dyn proxy::ProxyHttpClient>,
@@ -123,7 +123,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::api::proxy::{self, ProxyHttpClient, RESULTS_RECEIVER_ORIGIN};
-    use crate::config::{BlobStoreSelector, Config, S3Config};
+    use crate::config::{BlobStoreSelector, Config, DatabaseDriver, S3Config};
     use crate::storage::{BlobStore, PresignedUrl};
 
     #[derive(Clone, Debug)]
@@ -237,6 +237,7 @@ mod tests {
             request_timeout: Duration::from_secs(30),
             max_concurrency: 16,
             database_url: "postgres://localhost/test".into(),
+            database_driver: DatabaseDriver::Postgres,
             blob_store: BlobStoreSelector::S3,
             s3: Some(S3Config {
                 bucket: "bucket".into(),
@@ -253,7 +254,7 @@ mod tests {
     async fn proxies_unknown_paths_via_results_receiver() {
         let mock = MockProxyClient::with_body(StatusCode::ACCEPTED, "proxied body");
         let proxy_arc: Arc<dyn proxy::ProxyHttpClient> = Arc::new(mock.clone());
-        let pool = PgPool::connect_lazy("postgres://postgres@localhost/test").expect("lazy pool");
+        let pool = AnyPool::connect_lazy("sqlite::memory:").expect("lazy pool");
         let store: Arc<dyn BlobStore> = Arc::new(NoopStore);
         let cfg = test_config();
 
@@ -308,7 +309,7 @@ mod tests {
     async fn known_routes_bypass_proxy() {
         let mock = MockProxyClient::with_body(StatusCode::IM_A_TEAPOT, "unused");
         let proxy_arc: Arc<dyn proxy::ProxyHttpClient> = Arc::new(mock.clone());
-        let pool = PgPool::connect_lazy("postgres://postgres@localhost/test").expect("lazy pool");
+        let pool = AnyPool::connect_lazy("sqlite::memory:").expect("lazy pool");
         let store: Arc<dyn BlobStore> = Arc::new(NoopStore);
         let cfg = test_config();
 
@@ -341,7 +342,7 @@ mod tests {
     async fn root_route_returns_ok() {
         let mock = MockProxyClient::with_body(StatusCode::IM_A_TEAPOT, "unused");
         let proxy_arc: Arc<dyn proxy::ProxyHttpClient> = Arc::new(mock.clone());
-        let pool = PgPool::connect_lazy("postgres://postgres@localhost/test").expect("lazy pool");
+        let pool = AnyPool::connect_lazy("sqlite::memory:").expect("lazy pool");
         let store: Arc<dyn BlobStore> = Arc::new(NoopStore);
         let cfg = test_config();
 
