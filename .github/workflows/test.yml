@@ -22,8 +22,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
 
 jobs:
-  test:
+  check-postgres:
     runs-on: self-hosted
+    env:
+      DATABASE_URL: postgres://nimbus:secret@localhost:5432/cache
+      DATABASE_DRIVER: postgres
     services:
       postgres:
         image: ghcr.io/bitcompat/postgresql:17
@@ -48,14 +51,90 @@ jobs:
         with:
           cache-all-crates: 'true'
       - name: Install sqlx-cli
-        run: cargo install sqlx-cli
+        run: cargo install sqlx-cli --no-default-features --features native-tls,postgres,mysql,sqlite
       - name: Install required packages
         run: sudo apt-get update && sudo apt-get install -y postgresql-client
-      - name: Setup database
-        run: cargo sqlx database setup
-        env:
-          DATABASE_URL: postgres://nimbus:secret@localhost:5432/cache
+      - name: Prepare database
+        run: |
+          sqlx database create
+          sqlx migrate run --source migrations/postgres
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Run tests
-        run: cargo test --all-features
+        run: cargo test --all-targets --all-features
+
+  check-mysql:
+    runs-on: self-hosted
+    env:
+      DATABASE_URL: mysql://nimbus:secret@localhost:3306/cache
+      DATABASE_DRIVER: mysql
+    services:
+      mysql:
+        image: mysql:8
         env:
-          DATABASE_URL: postgres://nimbus:secret@localhost:5432/cache
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: cache
+          MYSQL_USER: nimbus
+          MYSQL_PASSWORD: secret
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -proot" --health-interval=10s --health-timeout=5s --health-retries=5
+        ports:
+          - 3306:3306
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        run: |-
+          command -v rustup || ( curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y )
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Update Rust toolchain
+        run: rustup update
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: 'true'
+      - name: Install sqlx-cli
+        run: cargo install sqlx-cli --no-default-features --features native-tls,postgres,mysql,sqlite
+      - name: Install required packages
+        run: sudo apt-get update && sudo apt-get install -y default-mysql-client
+      - name: Prepare database
+        run: |
+          sqlx database create
+          sqlx migrate run --source migrations/mysql
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Run tests
+        run: cargo test --all-targets --all-features
+
+  check-sqlite:
+    runs-on: self-hosted
+    env:
+      DATABASE_URL: sqlite:///tmp/gha-cache.db
+      DATABASE_DRIVER: sqlite
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        run: |-
+          command -v rustup || ( curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y )
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Update Rust toolchain
+        run: rustup update
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: 'true'
+      - name: Install sqlx-cli
+        run: cargo install sqlx-cli --no-default-features --features native-tls,postgres,mysql,sqlite
+      - name: Prepare database
+        run: |
+          mkdir -p /tmp
+          rm -f /tmp/gha-cache.db
+          sqlx database create
+          sqlx migrate run --source migrations/sqlite
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Run tests
+        run: cargo test --all-targets --all-features

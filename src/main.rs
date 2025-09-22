@@ -7,15 +7,19 @@ mod obs;
 mod storage;
 
 use axum::Router;
-use sqlx::postgres::PgPoolOptions;
+use sqlx::{AnyPool, any::AnyPoolOptions, migrate::Migrator};
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 
 use anyhow::Context;
 
 use crate::http::build_router;
-use config::{BlobStoreSelector, Config};
+use config::{BlobStoreSelector, Config, DatabaseDriver};
 use storage::{BlobStore, fs::FsStore, gcs::GcsStore, s3::S3Store};
+
+static PG_MIGRATOR: Migrator = sqlx::migrate!("./migrations/postgres");
+static MYSQL_MIGRATOR: Migrator = sqlx::migrate!("./migrations/mysql");
+static SQLITE_MIGRATOR: Migrator = sqlx::migrate!("./migrations/sqlite");
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -23,11 +27,18 @@ async fn main() -> anyhow::Result<()> {
     let cfg = Config::from_env()?;
 
     // DB
-    let pool = PgPoolOptions::new()
+    let pool = AnyPoolOptions::new()
         .max_connections(10)
         .connect(&cfg.database_url)
         .await?;
-    sqlx::migrate!("./migrations").run(&pool).await?;
+
+    if matches!(cfg.database_driver, DatabaseDriver::Sqlite) {
+        sqlx::query("PRAGMA foreign_keys = ON;")
+            .execute(&pool)
+            .await?;
+    }
+
+    run_migrations(&pool, cfg.database_driver).await?;
 
     // Storage backend
     let store: Arc<dyn BlobStore> = match cfg.blob_store {
@@ -68,5 +79,14 @@ async fn main() -> anyhow::Result<()> {
     let addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), cfg.port);
     tracing::info!(%addr, "listening");
     axum::serve(tokio::net::TcpListener::bind(addr).await?, app).await?;
+    Ok(())
+}
+
+async fn run_migrations(pool: &AnyPool, driver: DatabaseDriver) -> anyhow::Result<()> {
+    match driver {
+        DatabaseDriver::Postgres => PG_MIGRATOR.run(pool).await?,
+        DatabaseDriver::Mysql => MYSQL_MIGRATOR.run(pool).await?,
+        DatabaseDriver::Sqlite => SQLITE_MIGRATOR.run(pool).await?,
+    }
     Ok(())
 }

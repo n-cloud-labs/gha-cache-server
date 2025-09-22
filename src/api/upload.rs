@@ -7,7 +7,8 @@ use base64::{Engine as _, engine::general_purpose};
 use chrono::{DateTime, Utc};
 use futures::{StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use sqlx::Row;
+use std::{io, time::Duration};
 use uuid::Uuid;
 
 use crate::http::AppState;
@@ -56,6 +57,19 @@ struct CacheListRow {
     storage_key: String,
     created_at: DateTime<Utc>,
     last_access_at: DateTime<Utc>,
+}
+
+fn parse_uuid(value: String) -> sqlx::Result<Uuid> {
+    Uuid::parse_str(&value).map_err(|err| sqlx::Error::Decode(Box::new(err)))
+}
+
+fn timestamp_to_datetime(ts: i64) -> sqlx::Result<DateTime<Utc>> {
+    DateTime::<Utc>::from_timestamp(ts, 0).ok_or_else(|| {
+        sqlx::Error::Decode(Box::new(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid timestamp: {ts}"),
+        )))
+    })
 }
 
 async fn build_list_response(
@@ -116,18 +130,28 @@ pub async fn list_caches(
 ) -> Result<Json<ListCachesResponse>> {
     let key = extract_list_key(query.key)?;
 
-    let entries = sqlx::query_as!(
-        CacheListRow,
-        r#"
-            SELECT id, scope, key, size_bytes, storage_key, created_at, last_access_at
-            FROM cache_entries
-            WHERE key = $1
-            ORDER BY created_at DESC
-        "#,
-        key
+    let rows = sqlx::query(
+        "SELECT id, scope, cache_key, size_bytes, storage_key, created_at, last_access_at FROM cache_entries WHERE cache_key = ? ORDER BY created_at DESC",
     )
+    .bind(&key)
     .fetch_all(&st.pool)
     .await?;
+
+    let mut entries = Vec::with_capacity(rows.len());
+    for row in rows {
+        let id = parse_uuid(row.try_get::<String, _>("id")?)?;
+        let created_at = timestamp_to_datetime(row.try_get::<i64, _>("created_at")?)?;
+        let last_access_at = timestamp_to_datetime(row.try_get::<i64, _>("last_access_at")?)?;
+        entries.push(CacheListRow {
+            id,
+            scope: row.try_get("scope")?,
+            key: row.try_get("cache_key")?,
+            size_bytes: row.try_get("size_bytes")?,
+            storage_key: row.try_get("storage_key")?,
+            created_at,
+            last_access_at,
+        });
+    }
 
     let body = build_list_response(entries, st.store.as_ref(), st.enable_direct).await?;
     Ok(Json(body))
@@ -141,16 +165,20 @@ pub async fn get_cache_entry(
     let keys = q.get("keys").cloned().unwrap_or_default();
     // let version = q.get("version").cloned().unwrap_or_default();
     // Simplified lookup: pick first matching entry (TODO: add restore-keys precedence)
-    let rec = sqlx::query!(
-"SELECT id, storage_key, created_at FROM cache_entries WHERE key = $1 ORDER BY created_at DESC LIMIT 1",
-keys.split(',').next().unwrap_or("")
-).fetch_optional(&st.pool).await?;
+    let rec = sqlx::query(
+        "SELECT id, storage_key, created_at FROM cache_entries WHERE cache_key = ? ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(keys.split(',').next().unwrap_or(""))
+    .fetch_optional(&st.pool)
+    .await?;
 
-    if let Some(r) = rec {
+    if let Some(row) = rec {
+        let created_at = timestamp_to_datetime(row.try_get::<i64, _>("created_at")?)?;
         // Return 200 with archiveLocation (direct presigned URL); scope kept generic
+        let storage_key: String = row.try_get("storage_key")?;
         let url = st
             .store
-            .presign_get(&r.storage_key, std::time::Duration::from_secs(3600))
+            .presign_get(&storage_key, std::time::Duration::from_secs(3600))
             .await
             .map_err(|e| ApiError::S3(format!("{e}")))?
             .map(|p| p.url.to_string())
@@ -158,7 +186,7 @@ keys.split(',').next().unwrap_or("")
         let body = serde_json::json!({
         "cacheKey": keys,
         "scope": "",
-        "creationTime": r.created_at,
+        "creationTime": created_at,
         "archiveLocation": url,
         });
         return Ok((StatusCode::OK, Json(body)));
@@ -197,19 +225,25 @@ pub async fn upload_chunk(
     body: axum::body::Body,
 ) -> Result<StatusCode> {
     let uuid = Uuid::parse_str(&id).map_err(|_| ApiError::BadRequest("invalid cacheId".into()))?;
-    let rec = sqlx::query!("SELECT upload_id, storage_key FROM cache_uploads u JOIN cache_entries e ON e.id=u.entry_id WHERE e.id=$1", uuid)
-        .fetch_one(&st.pool).await?;
+    let rec = sqlx::query(
+        "SELECT upload_id, storage_key FROM cache_uploads u JOIN cache_entries e ON e.id = u.entry_id WHERE e.id = ?",
+    )
+    .bind(uuid.to_string())
+    .fetch_one(&st.pool)
+    .await?;
+    let upload_id: String = rec.try_get("upload_id")?;
+    let storage_key: String = rec.try_get("storage_key")?;
 
     // We don't actually need offsets here because we map each PATCH to an S3 part in order.
-    let next_part = 1 + meta::get_parts(&st.pool, &rec.upload_id).await?.len() as i32;
+    let next_part = 1 + meta::get_parts(&st.pool, &upload_id).await?.len() as i32;
 
     let bs = body_to_blob_payload(body);
     let etag = st
         .store
-        .upload_part(&rec.storage_key, &rec.upload_id, next_part, bs)
+        .upload_part(&storage_key, &upload_id, next_part, bs)
         .await
         .map_err(|e| ApiError::S3(format!("{e}")))?;
-    meta::add_part(&st.pool, &rec.upload_id, next_part, &etag).await?;
+    meta::add_part(&st.pool, &upload_id, next_part, &etag).await?;
 
     Ok(StatusCode::OK)
 }
@@ -225,23 +259,27 @@ pub async fn commit_cache(
     Json(req): Json<serde_json::Value>,
 ) -> Result<StatusCode> {
     let uuid = Uuid::parse_str(&id).map_err(|_| ApiError::BadRequest("invalid cacheId".into()))?;
-    let rec = sqlx::query!("SELECT upload_id, storage_key FROM cache_uploads u JOIN cache_entries e ON e.id=u.entry_id WHERE e.id=$1", uuid)
-        .fetch_one(&st.pool).await?;
-    let parts = meta::get_parts(&st.pool, &rec.upload_id).await?;
+    let rec = sqlx::query(
+        "SELECT upload_id, storage_key FROM cache_uploads u JOIN cache_entries e ON e.id = u.entry_id WHERE e.id = ?",
+    )
+    .bind(uuid.to_string())
+    .fetch_one(&st.pool)
+    .await?;
+    let upload_id: String = rec.try_get("upload_id")?;
+    let storage_key: String = rec.try_get("storage_key")?;
+    let parts = meta::get_parts(&st.pool, &upload_id).await?;
     st.store
-        .complete_multipart(&rec.storage_key, &rec.upload_id, parts)
+        .complete_multipart(&storage_key, &upload_id, parts)
         .await
         .map_err(|e| ApiError::S3(format!("{e}")))?;
 
     // Persist size if provided
     if let Some(size) = req.get("size").and_then(|v| v.as_i64()) {
-        let _ = sqlx::query!(
-            "UPDATE cache_entries SET size_bytes=$2 WHERE id=$1",
-            uuid,
-            size
-        )
-        .execute(&st.pool)
-        .await?;
+        sqlx::query("UPDATE cache_entries SET size_bytes = ? WHERE id = ?")
+            .bind(size)
+            .bind(uuid.to_string())
+            .execute(&st.pool)
+            .await?;
     }
     Ok(StatusCode::CREATED)
 }

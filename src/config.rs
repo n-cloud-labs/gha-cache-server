@@ -70,6 +70,7 @@ pub struct Config {
     pub max_concurrency: usize,
 
     pub database_url: String,
+    pub database_driver: DatabaseDriver,
 
     pub blob_store: BlobStoreSelector,
 
@@ -78,10 +79,34 @@ pub struct Config {
     pub gcs: Option<GcsConfig>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DatabaseDriver {
+    Postgres,
+    Mysql,
+    Sqlite,
+}
+
+impl FromStr for DatabaseDriver {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "postgres" | "postgresql" | "pg" => Ok(Self::Postgres),
+            "mysql" => Ok(Self::Mysql),
+            "sqlite" => Ok(Self::Sqlite),
+            other => anyhow::bail!("unsupported database driver '{other}'"),
+        }
+    }
+}
+
 impl Config {
     pub fn from_env() -> Result<Self> {
         let blob_store = std::env::var("BLOB_STORE")
             .unwrap_or_else(|_| "s3".to_string())
+            .parse()?;
+
+        let database_driver = std::env::var("DATABASE_DRIVER")
+            .unwrap_or_else(|_| "postgres".to_string())
             .parse()?;
 
         let s3 = if matches!(blob_store, BlobStoreSelector::S3) {
@@ -177,6 +202,7 @@ impl Config {
                 .unwrap_or(64),
 
             database_url: std::env::var("DATABASE_URL").expect("DATABASE_URL is required"),
+            database_driver,
 
             blob_store,
 
