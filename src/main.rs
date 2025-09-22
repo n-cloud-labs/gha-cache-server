@@ -10,7 +10,6 @@ use axum::Router;
 use sqlx::postgres::PgPoolOptions;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
-use tower::limit::ConcurrencyLimitLayer;
 
 use crate::http::build_router;
 use config::Config;
@@ -40,8 +39,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Router
-    let app: Router =
-        build_router(pool, store, &cfg).layer(ConcurrencyLimitLayer::new(cfg.max_concurrency));
+    let app: Router = build_router(pool, store, &cfg);
 
     let addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), cfg.port);
     tracing::info!(%addr, "listening");
