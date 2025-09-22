@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT upload_id, storage_key FROM cache_uploads u JOIN cache_entries e ON e.id=u.entry_id WHERE e.id=$1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "upload_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "storage_key",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "54a87fe3a5ca036859dd550aacb6095078e1d00fe73259196d90716273267dff"
+}

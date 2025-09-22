@@ -1,0 +1,36 @@
+name: Format
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+  pull_request:
+    types:
+      - opened
+      - synchronize
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+
+concurrency:
+  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  check-format:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        run: |-
+          command -v rustup || ( curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --component rustfmt )
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Update Rust toolchain
+        run: rustup update
+      - name: Check formatting
+        run: cargo fmt --all -- --check

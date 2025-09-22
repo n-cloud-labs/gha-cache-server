@@ -1,0 +1,71 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+  pull_request:
+    types:
+      - opened
+      - synchronize
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+
+concurrency:
+  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  test:
+    runs-on: self-hosted
+    services:
+      postgres:
+        image: ghcr.io/bitcompat/postgresql:17
+        env:
+          POSTGRESQL_USERNAME: nimbus
+          POSTGRESQL_PASSWORD: secret
+          POSTGRESQL_DATABASE: nimbus
+          ALLOW_EMPTY_PASSWORD: 'yes'
+        options: >-
+          --health-cmd="pg_isready -U nimbus" --health-interval=10s --health-timeout=5s --health-retries=5
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        run: |-
+          command -v rustup || ( curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y )
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Update Rust toolchain
+        run: rustup update
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: 'true'
+      - name: Install sqlx-cli
+        run: cargo install sqlx-cli
+      - name: Install required packages
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client libvirt-dev
+      - name: Create database
+        run: |-
+          psql -h localhost -U nimbus -c 'CREATE DATABASE iam'
+          psql -h localhost -U nimbus -c 'CREATE DATABASE compute'
+        env:
+          PGPASSWORD: secret
+      - name: Run IAM migrations
+        run: cd iam-core && cargo sqlx database setup && cd ..
+        env:
+          DATABASE_URL: postgres://nimbus:secret@localhost:5432/iam
+      - name: Run Compute migrations
+        run: cd compute-api && cargo sqlx database setup && cd ..
+        env:
+          DATABASE_URL: postgres://nimbus:secret@localhost:5432/compute
+      - name: Run tests
+        run: cargo test --all-features
+        env:
+          DATABASE_URL: postgres://nimbus:secret@localhost:5432/iam

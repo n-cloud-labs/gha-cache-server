@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: ghcr.io/bitcompat/postgresql:16
+    environment:
+      POSTGRESQL_PASSWORD: postgres
+      POSTGRESQL_USER: postgres
+      POSTGRESQL_DB: cache
+    ports: ["5432:5432"]
+
+
+  minio:
+    image: quay.io/minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports: ["9000:9000", "9001:9001"]
+    volumes:
+      - ./_data/minio:/data
