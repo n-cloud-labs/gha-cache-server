@@ -9,11 +9,12 @@ mod storage;
 use axum::Router;
 use sqlx::postgres::PgPoolOptions;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tower::limit::ConcurrencyLimitLayer;
 
 use crate::http::build_router;
 use config::Config;
-use storage::s3::S3Store;
+use storage::{BlobStore, s3::S3Store};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -28,13 +29,15 @@ async fn main() -> anyhow::Result<()> {
     sqlx::migrate!("./migrations").run(&pool).await?;
 
     // S3 / MinIO
-    let store = S3Store::new(
-        cfg.s3_bucket.clone(),
-        cfg.aws_region.clone(),
-        cfg.aws_endpoint_url.clone(),
-        cfg.force_path_style,
-    )
-    .await?;
+    let store: Arc<dyn BlobStore> = Arc::new(
+        S3Store::new(
+            cfg.s3_bucket.clone(),
+            cfg.aws_region.clone(),
+            cfg.aws_endpoint_url.clone(),
+            cfg.force_path_style,
+        )
+        .await?,
+    );
 
     // Router
     let app: Router =

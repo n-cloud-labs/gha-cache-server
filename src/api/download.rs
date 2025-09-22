@@ -6,7 +6,6 @@ use std::time::Duration;
 
 use crate::error::{ApiError, Result};
 use crate::http::AppState;
-use crate::storage::BlobStore;
 
 // GET /download/{random}/{filename}
 // We treat {random} as an opaque object key prefix (already known/stored in DB), and {filename} ignored for routing convenience
