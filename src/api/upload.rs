@@ -60,7 +60,7 @@ struct CacheListRow {
 
 async fn build_list_response(
     entries: Vec<CacheListRow>,
-    store: &(dyn BlobStore),
+    store: &dyn BlobStore,
     enable_direct: bool,
 ) -> Result<ListCachesResponse> {
     let mut artifact_caches = Vec::with_capacity(entries.len());
