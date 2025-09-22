@@ -38,6 +38,7 @@ pub(crate) fn build_router_with_proxy(
 
     Router::new()
         .without_v07_checks()
+        .route("/", get(|| async { "OK" }))
         .route("/healthz", get(|| async { "ok" }))
         // ===== Official actions/cache style =====
         // GET lookup
@@ -297,6 +298,39 @@ mod tests {
             .expect("body")
             .to_bytes();
         assert_eq!(body_bytes, Bytes::from_static(b"ok"));
+
+        let calls = mock.take_calls().await;
+        assert!(
+            calls.is_empty(),
+            "proxy should not be invoked for known routes"
+        );
+    }
+
+    #[tokio::test]
+    async fn root_route_returns_ok() {
+        let mock = MockProxyClient::with_body(StatusCode::IM_A_TEAPOT, "unused");
+        let proxy_arc: Arc<dyn proxy::ProxyHttpClient> = Arc::new(mock.clone());
+        let pool = PgPool::connect_lazy("postgres://postgres@localhost/test").expect("lazy pool");
+        let store: Arc<dyn BlobStore> = Arc::new(NoopStore);
+        let cfg = test_config();
+
+        let router = build_router_with_proxy(pool, store, &cfg, proxy_arc);
+
+        let request = Request::builder()
+            .uri("/")
+            .body(Body::empty())
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("router response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body_bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes();
+        assert_eq!(body_bytes, Bytes::from_static(b"OK"));
 
         let calls = mock.take_calls().await;
         assert!(
