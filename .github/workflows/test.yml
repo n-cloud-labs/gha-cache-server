@@ -30,7 +30,7 @@ jobs:
         env:
           POSTGRESQL_USERNAME: nimbus
           POSTGRESQL_PASSWORD: secret
-          POSTGRESQL_DATABASE: nimbus
+          POSTGRESQL_DATABASE: cache
           ALLOW_EMPTY_PASSWORD: 'yes'
         options: >-
           --health-cmd="pg_isready -U nimbus" --health-interval=10s --health-timeout=5s --health-retries=5
@@ -50,21 +50,11 @@ jobs:
       - name: Install sqlx-cli
         run: cargo install sqlx-cli
       - name: Install required packages
-        run: sudo apt-get update && sudo apt-get install -y postgresql-client libvirt-dev
-      - name: Create database
-        run: |-
-          psql -h localhost -U nimbus -c 'CREATE DATABASE iam'
-          psql -h localhost -U nimbus -c 'CREATE DATABASE compute'
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Setup database
+        run: cargo sqlx database setup
         env:
-          PGPASSWORD: secret
-      - name: Run IAM migrations
-        run: cd iam-core && cargo sqlx database setup && cd ..
-        env:
-          DATABASE_URL: postgres://nimbus:secret@localhost:5432/iam
-      - name: Run Compute migrations
-        run: cd compute-api && cargo sqlx database setup && cd ..
-        env:
-          DATABASE_URL: postgres://nimbus:secret@localhost:5432/compute
+          DATABASE_URL: postgres://nimbus:secret@localhost:5432/cache
       - name: Run tests
         run: cargo test --all-features
         env:
