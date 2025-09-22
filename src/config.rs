@@ -1,11 +1,14 @@
-use std::{path::PathBuf, str::FromStr, time::Duration};
+use std::{fs, path::PathBuf, str::FromStr, time::Duration};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
+use serde::Deserialize;
+use serde_json::Value;
 
 #[derive(Clone, Debug)]
 pub enum BlobStoreSelector {
     Fs,
     S3,
+    Gcs,
 }
 
 impl FromStr for BlobStoreSelector {
@@ -15,6 +18,7 @@ impl FromStr for BlobStoreSelector {
         match value {
             "fs" => Ok(Self::Fs),
             "s3" => Ok(Self::S3),
+            "gcs" => Ok(Self::Gcs),
             other => anyhow::bail!("unsupported blob store '{other}'"),
         }
     }
@@ -36,6 +40,29 @@ pub struct FsConfig {
 }
 
 #[derive(Clone)]
+pub struct GcsCredentials {
+    pub raw_json: Value,
+    pub service_account: ServiceAccountKeyConfig,
+}
+
+#[derive(Clone)]
+pub struct GcsConfig {
+    pub bucket: String,
+    pub credentials: GcsCredentials,
+    pub endpoint: Option<String>,
+}
+
+#[derive(Clone, Deserialize)]
+pub struct ServiceAccountKeyConfig {
+    #[serde(rename = "client_email")]
+    pub client_email: String,
+    #[serde(rename = "private_key")]
+    pub private_key: String,
+    #[serde(rename = "private_key_id")]
+    pub private_key_id: String,
+}
+
+#[derive(Clone)]
 pub struct Config {
     pub port: u16,
     pub enable_direct_downloads: bool,
@@ -48,6 +75,7 @@ pub struct Config {
 
     pub s3: Option<S3Config>,
     pub fs: Option<FsConfig>,
+    pub gcs: Option<GcsConfig>,
 }
 
 impl Config {
@@ -83,6 +111,53 @@ impl Config {
             None
         };
 
+        let gcs = if matches!(blob_store, BlobStoreSelector::Gcs) {
+            let bucket = std::env::var("GCS_BUCKET")
+                .context("GCS_BUCKET is required when BLOB_STORE=gcs")?;
+            let bucket = bucket.trim().to_string();
+            if bucket.is_empty() {
+                bail!("GCS_BUCKET may not be empty");
+            }
+
+            let credentials_json = if let Ok(inline) = std::env::var("GCS_SERVICE_ACCOUNT_JSON") {
+                if inline.trim().is_empty() {
+                    bail!("GCS_SERVICE_ACCOUNT_JSON may not be empty");
+                }
+                serde_json::from_str::<Value>(&inline)
+                    .context("GCS_SERVICE_ACCOUNT_JSON must contain valid JSON")?
+            } else {
+                let path = std::env::var("GCS_SERVICE_ACCOUNT_PATH").context(
+                    "set GCS_SERVICE_ACCOUNT_JSON or GCS_SERVICE_ACCOUNT_PATH when BLOB_STORE=gcs",
+                )?;
+                let contents = fs::read_to_string(&path).with_context(|| {
+                    format!("failed to read GCS service account file at {path}")
+                })?;
+                serde_json::from_str::<Value>(&contents).with_context(|| {
+                    format!("invalid JSON in GCS service account file at {path}")
+                })?
+            };
+
+            let service_account: ServiceAccountKeyConfig =
+                serde_json::from_value(credentials_json.clone())
+                    .context("GCS service account JSON is missing required fields")?;
+
+            let endpoint = std::env::var("GCS_ENDPOINT")
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty());
+
+            Some(GcsConfig {
+                bucket,
+                credentials: GcsCredentials {
+                    raw_json: credentials_json,
+                    service_account,
+                },
+                endpoint,
+            })
+        } else {
+            None
+        };
+
         Ok(Self {
             port: std::env::var("PORT")
                 .ok()
@@ -107,6 +182,7 @@ impl Config {
 
             s3,
             fs,
+            gcs,
         })
     }
 }

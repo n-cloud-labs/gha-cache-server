@@ -13,6 +13,8 @@ The server supports pluggable blob storage. Select the implementation via the
   * `S3_FORCE_PATH_STYLE` (defaults to `true`)
 * `fs` – persist cache archives on the local filesystem. This mode requires a
   dedicated root directory and supports optional POSIX permissions.
+* `gcs` – store cache archives in Google Cloud Storage. This mode requires a
+  dedicated bucket and service account credentials (see below).
 
 ## Filesystem store settings
 
@@ -28,3 +30,19 @@ When `BLOB_STORE=fs` the process reads additional options:
 
 When the filesystem backend is active, direct-download URLs are not generated;
 callers should stream downloads through the HTTP API instead.
+
+## Google Cloud Storage settings
+
+When `BLOB_STORE=gcs`, configure the following environment variables:
+
+* `GCS_BUCKET` – name of the bucket that should receive cache archives.
+* Authentication credentials. Provide either:
+  * `GCS_SERVICE_ACCOUNT_JSON` – inline JSON for a service account key.
+  * `GCS_SERVICE_ACCOUNT_PATH` – path to a file containing the service account
+    key JSON.
+* `GCS_ENDPOINT` – optional custom endpoint (for example an emulator). When
+  omitted the client uses `https://storage.googleapis.com`.
+
+The GCS backend composes multipart uploads from temporary objects inside the
+target bucket and automatically issues V4-signed download URLs when direct
+downloads are enabled.
