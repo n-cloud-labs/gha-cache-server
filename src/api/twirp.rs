@@ -81,6 +81,7 @@ pub async fn get_cache_entry_download_url(
         .fetch_one(&st.pool)
         .await?;
     let storage_key: String = rec.try_get("storage_key")?;
+    meta::touch_entry(&st.pool, uuid).await?;
     let pres = st
         .store
         .presign_get(&storage_key, std::time::Duration::from_secs(3600))

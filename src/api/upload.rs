@@ -173,9 +173,11 @@ pub async fn get_cache_entry(
     .await?;
 
     if let Some(row) = rec {
+        let id = parse_uuid(row.try_get::<String, _>("id")?)?;
         let created_at = timestamp_to_datetime(row.try_get::<i64, _>("created_at")?)?;
         // Return 200 with archiveLocation (direct presigned URL); scope kept generic
         let storage_key: String = row.try_get("storage_key")?;
+        meta::touch_entry(&st.pool, id).await?;
         let url = st
             .store
             .presign_get(&storage_key, std::time::Duration::from_secs(3600))

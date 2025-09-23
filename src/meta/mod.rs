@@ -126,6 +126,16 @@ async fn fetch_entry(pool: &AnyPool, id: Uuid) -> Result<CacheEntry, sqlx::Error
     map_cache_entry(row)
 }
 
+pub async fn touch_entry(pool: &AnyPool, id: Uuid) -> Result<(), sqlx::Error> {
+    let now = Utc::now().timestamp();
+    sqlx::query("UPDATE cache_entries SET last_access_at = ? WHERE id = ?")
+        .bind(now)
+        .bind(id.to_string())
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn create_entry(
     pool: &AnyPool,
     org: &str,
