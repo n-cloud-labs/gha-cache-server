@@ -1,0 +1,18 @@
+Source: gha-cache-server
+Section: net
+Priority: optional
+Maintainer: GitHub Actions <actions@github.com>
+Build-Depends: debhelper (>= 13), cargo, rustc, pkg-config
+Standards-Version: 4.6.2
+Homepage: https://github.com/actions/gha-cache-server
+Rules-Requires-Root: no
+
+Package: gha-cache-server
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, adduser
+Description: GitHub Actions cache compatibility server
+ Self-hosted implementation of the GitHub Actions cache API that enables
+ private runners to share build artifacts. The service exposes an HTTP
+ interface compatible with the hosted cache backend and supports multiple
+ blob storage backends including S3, Google Cloud Storage, and the local
+ filesystem.
