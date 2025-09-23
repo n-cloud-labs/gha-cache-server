@@ -1,0 +1,4 @@
+# Ensure runtime and configuration directories for gha-cache-server exist
+# and have restrictive permissions.
+d /var/lib/gha-cache-server 0750 gha-cache-server gha-cache-server -
+d /etc/gha-cache-server 0750 gha-cache-server gha-cache-server -

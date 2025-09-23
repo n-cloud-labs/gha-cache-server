@@ -1,0 +1,25 @@
+# RPM packaging notes
+
+## Building the package
+
+1. Create the standard RPM build tree (for example by running `rpmdev-setuptree`).
+2. Export the repository sources:
+   ```bash
+   VERSION=$(awk '/^Version:/ { print $2; exit }' packaging/rpm/gha-cache-server.spec)
+   git archive --format=tar --prefix="gha-cache-server-${VERSION}/" HEAD \
+     | gzip > "${HOME}/rpmbuild/SOURCES/gha-cache-server-${VERSION}.tar.gz"
+   ```
+3. Copy `packaging/rpm/gha-cache-server.spec` into `~/rpmbuild/SPECS/`.
+4. Build the package with `rpmbuild -ba ~/rpmbuild/SPECS/gha-cache-server.spec`.
+
+## SELinux considerations
+
+Systems with SELinux enforcing should label the data directory so the service can read
+and write its files:
+
+```bash
+sudo semanage fcontext -a -t var_lib_t '/var/lib/gha-cache-server(/.*)?'
+sudo restorecon -Rv /var/lib/gha-cache-server
+```
+
+Adjust the path if you relocate the cache storage outside `/var/lib/gha-cache-server`.
