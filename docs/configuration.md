@@ -5,14 +5,14 @@
 The server supports pluggable blob storage. Select the implementation via the
 `BLOB_STORE` environment variable:
 
-* `s3` *(default)* – store cache archives in an S3-compatible bucket. When this
-  mode is active the following variables must be provided:
+* `fs` *(default)* – persist cache archives on the local filesystem. This mode
+  requires a dedicated root directory and supports optional POSIX permissions.
+* `s3` – store cache archives in an S3-compatible bucket. When this mode is
+  active the following variables must be provided:
   * `S3_BUCKET`
   * `AWS_REGION` (defaults to `us-east-1`)
   * `AWS_ENDPOINT_URL` (optional)
   * `S3_FORCE_PATH_STYLE` (defaults to `true`)
-* `fs` – persist cache archives on the local filesystem. This mode requires a
-  dedicated root directory and supports optional POSIX permissions.
 * `gcs` – store cache archives in Google Cloud Storage. This mode requires a
   dedicated bucket and service account credentials (see below).
 

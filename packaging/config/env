@@ -16,9 +16,9 @@ DATABASE_URL=sqlite:///var/lib/gha-cache-server/cache.db
 # Request timeout in seconds applied to storage operations (defaults to 3600).
 #REQUEST_TIMEOUT_SECS=3600
 
-# Select the blob storage backend. Supported values: s3 (default), fs, gcs.
+# Select the blob storage backend. Supported values: fs (default), s3, gcs.
 # See docs/configuration.md for the backend-specific settings documented below.
-#BLOB_STORE=s3
+BLOB_STORE=fs
 
 # S3 backend configuration.
 #S3_BUCKET=gha-cache
