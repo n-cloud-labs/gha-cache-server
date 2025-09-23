@@ -23,5 +23,5 @@ CREATE TABLE IF NOT EXISTS cache_uploads (
     CONSTRAINT fk_cache_upload_entry FOREIGN KEY (entry_id) REFERENCES cache_entries(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE INDEX idx_cache_entries_org_repo_key ON cache_entries (org, repo, cache_key);
+CREATE INDEX idx_cache_entries_org_repo_key ON cache_entries (org(191), repo(191), cache_key(191));
 CREATE INDEX idx_cache_entries_last_access ON cache_entries (last_access_at);
