@@ -99,14 +99,29 @@ impl FromStr for DatabaseDriver {
     }
 }
 
+impl DatabaseDriver {
+    pub fn from_url(url: &str) -> Result<Self> {
+        let scheme = url
+            .split_once(':')
+            .map(|(scheme, _)| scheme)
+            .unwrap_or("")
+            .to_ascii_lowercase();
+
+        match scheme.as_str() {
+            "postgres" | "postgresql" | "pg" => Ok(Self::Postgres),
+            "mysql" => Ok(Self::Mysql),
+            "sqlite" => Ok(Self::Sqlite),
+            other => {
+                anyhow::bail!("unsupported database driver in DATABASE_URL (scheme '{other}')")
+            }
+        }
+    }
+}
+
 impl Config {
     pub fn from_env() -> Result<Self> {
         let blob_store = std::env::var("BLOB_STORE")
             .unwrap_or_else(|_| "s3".to_string())
-            .parse()?;
-
-        let database_driver = std::env::var("DATABASE_DRIVER")
-            .unwrap_or_else(|_| "postgres".to_string())
             .parse()?;
 
         let s3 = if matches!(blob_store, BlobStoreSelector::S3) {
@@ -183,6 +198,9 @@ impl Config {
             None
         };
 
+        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL is required");
+        let database_driver = DatabaseDriver::from_url(&database_url)?;
+
         Ok(Self {
             port: std::env::var("PORT")
                 .ok()
@@ -201,7 +219,7 @@ impl Config {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(64),
 
-            database_url: std::env::var("DATABASE_URL").expect("DATABASE_URL is required"),
+            database_url,
             database_driver,
 
             blob_store,
@@ -234,5 +252,55 @@ fn parse_mode(var: &str) -> Result<Option<u32>> {
         Err(std::env::VarError::NotUnicode(_)) => {
             anyhow::bail!("{var} contains invalid UTF-8")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn determines_postgres_from_url() {
+        assert_eq!(
+            DatabaseDriver::from_url("postgres://localhost/db").unwrap(),
+            DatabaseDriver::Postgres
+        );
+        assert_eq!(
+            DatabaseDriver::from_url("postgresql://localhost/db").unwrap(),
+            DatabaseDriver::Postgres
+        );
+        assert_eq!(
+            DatabaseDriver::from_url("pg://localhost/db").unwrap(),
+            DatabaseDriver::Postgres
+        );
+    }
+
+    #[test]
+    fn determines_mysql_from_url() {
+        assert_eq!(
+            DatabaseDriver::from_url("mysql://localhost/db").unwrap(),
+            DatabaseDriver::Mysql
+        );
+    }
+
+    #[test]
+    fn determines_sqlite_from_url() {
+        assert_eq!(
+            DatabaseDriver::from_url("sqlite::memory:").unwrap(),
+            DatabaseDriver::Sqlite
+        );
+        assert_eq!(
+            DatabaseDriver::from_url("sqlite:///tmp/test.db").unwrap(),
+            DatabaseDriver::Sqlite
+        );
+    }
+
+    #[test]
+    fn errors_on_unknown_scheme() {
+        let err = DatabaseDriver::from_url("redis://localhost/db").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("unsupported database driver in DATABASE_URL")
+        );
     }
 }
