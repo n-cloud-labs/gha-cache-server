@@ -160,11 +160,12 @@ pub async fn upsert_upload(
     let entry = entry_id.to_string();
 
     let insert = sqlx::query(
-        "INSERT INTO cache_uploads (id, entry_id, upload_id, state) VALUES (?, ?, ?, ?)",
+        "INSERT INTO cache_uploads (id, entry_id, upload_id, parts_json, state) VALUES (?, ?, ?, ?, ?)",
     )
     .bind(id.to_string())
     .bind(entry.clone())
     .bind(upload_id)
+    .bind("[]")
     .bind(state)
     .execute(pool)
     .await;
