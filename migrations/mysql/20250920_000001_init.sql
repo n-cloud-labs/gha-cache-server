@@ -25,3 +25,4 @@ CREATE TABLE IF NOT EXISTS cache_uploads (
 
 CREATE INDEX idx_cache_entries_org_repo_key ON cache_entries (org(191), repo(191), cache_key(191));
 CREATE INDEX idx_cache_entries_last_access ON cache_entries (last_access_at);
+CREATE INDEX idx_cache_entries_expiration ON cache_entries (last_access_at, ttl_seconds);

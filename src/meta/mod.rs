@@ -136,6 +136,64 @@ pub async fn touch_entry(pool: &AnyPool, id: Uuid) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
+#[allow(dead_code)]
+pub async fn delete_entry(pool: &AnyPool, id: Uuid) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM cache_entries WHERE id = ?")
+        .bind(id.to_string())
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub async fn expired_entry_ids(
+    pool: &AnyPool,
+    now: DateTime<Utc>,
+) -> Result<Vec<Uuid>, sqlx::Error> {
+    let ts = now.timestamp();
+    let ids: Vec<String> =
+        sqlx::query_scalar("SELECT id FROM cache_entries WHERE last_access_at + ttl_seconds < ?")
+            .bind(ts)
+            .fetch_all(pool)
+            .await?;
+
+    ids.into_iter().map(parse_uuid).collect()
+}
+
+#[allow(dead_code)]
+pub async fn total_occupancy(pool: &AnyPool) -> Result<i64, sqlx::Error> {
+    let total =
+        sqlx::query_scalar::<_, i64>("SELECT COALESCE(SUM(size_bytes), 0) FROM cache_entries")
+            .fetch_one(pool)
+            .await?;
+    Ok(total)
+}
+
+#[allow(dead_code)]
+pub async fn list_entries_ordered(
+    pool: &AnyPool,
+    limit: Option<i64>,
+) -> Result<Vec<CacheEntry>, sqlx::Error> {
+    if let Some(limit) = limit {
+        let rows = sqlx::query(
+            "SELECT id, org, repo, cache_key, scope, size_bytes, checksum, storage_key, created_at, last_access_at, ttl_seconds FROM cache_entries ORDER BY last_access_at ASC LIMIT ?",
+        )
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
+
+        rows.into_iter().map(map_cache_entry).collect()
+    } else {
+        let rows = sqlx::query(
+            "SELECT id, org, repo, cache_key, scope, size_bytes, checksum, storage_key, created_at, last_access_at, ttl_seconds FROM cache_entries ORDER BY last_access_at ASC",
+        )
+        .fetch_all(pool)
+        .await?;
+
+        rows.into_iter().map(map_cache_entry).collect()
+    }
+}
+
 pub async fn create_entry(
     pool: &AnyPool,
     org: &str,
