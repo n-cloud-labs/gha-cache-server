@@ -1,0 +1,65 @@
+name: RPM package
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'packaging/**'
+      - '.github/workflows/rpm.yml'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'src/**'
+  pull_request:
+    types:
+      - opened
+      - synchronize
+    paths:
+      - 'packaging/**'
+      - '.github/workflows/rpm.yml'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'src/**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-rpm:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - self-hosted
+          - self-hosted-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: registry.fedoraproject.org/fedora:40
+    steps:
+      - name: Install build dependencies
+        run: |
+          dnf -y groupinstall 'Development Tools'
+          dnf -y install git-core rpm-build rpmdevtools systemd-rpm-macros cargo rust cmake pkgconfig which
+      - uses: actions/checkout@v5
+      - name: Prepare RPM sources
+        run: |
+          git config --global --add safe.directory "$PWD"
+          rpmdev-setuptree
+          VERSION=$(awk '/^Version:/ { print $2; exit }' packaging/rpm/gha-cache-server.spec)
+          git archive --format=tar --prefix=gha-cache-server-${VERSION}/ HEAD | gzip > ~/rpmbuild/SOURCES/gha-cache-server-${VERSION}.tar.gz
+          cp packaging/rpm/gha-cache-server.spec ~/rpmbuild/SPECS/
+      - name: Build RPM
+        run: |
+          rpmbuild -ba ~/rpmbuild/SPECS/gha-cache-server.spec
+      - name: Collect RPM artifacts
+        run: |
+          mkdir -p artifacts
+          find ~/rpmbuild/RPMS -type f -name '*.rpm' -exec cp {} artifacts/ \;
+          find ~/rpmbuild/SRPMS -type f -name '*.src.rpm' -exec cp {} artifacts/ \;
+      - name: Upload RPM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: gha-cache-server-rpm-${{ matrix.runner }}
+          path: artifacts/*
+          if-no-files-found: error
