@@ -62,6 +62,13 @@ pub struct ServiceAccountKeyConfig {
     pub private_key_id: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct CleanupSettings {
+    pub interval: Duration,
+    pub max_entry_age: Option<Duration>,
+    pub max_total_bytes: Option<u64>,
+}
+
 #[derive(Clone)]
 pub struct Config {
     pub port: u16,
@@ -77,6 +84,8 @@ pub struct Config {
     pub s3: Option<S3Config>,
     pub fs: Option<FsConfig>,
     pub gcs: Option<GcsConfig>,
+
+    pub cleanup: CleanupSettings,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -227,6 +236,21 @@ impl Config {
             s3,
             fs,
             gcs,
+
+            cleanup: CleanupSettings {
+                interval: std::env::var("CLEANUP_INTERVAL_SECS")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .map(|secs| Duration::from_secs(secs.max(1)))
+                    .unwrap_or_else(|| Duration::from_secs(300)),
+                max_entry_age: std::env::var("CACHE_ENTRY_MAX_AGE_SECS")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .map(Duration::from_secs),
+                max_total_bytes: std::env::var("CACHE_STORAGE_MAX_BYTES")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok()),
+            },
         })
     }
 }

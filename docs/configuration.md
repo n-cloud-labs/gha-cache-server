@@ -46,3 +46,18 @@ When `BLOB_STORE=gcs`, configure the following environment variables:
 The GCS backend composes multipart uploads from temporary objects inside the
 target bucket and automatically issues V4-signed download URLs when direct
 downloads are enabled.
+
+## Cleanup settings
+
+The server periodically scans stored cache entries and deletes expired data. The
+following environment variables control this background job:
+
+* `CLEANUP_INTERVAL_SECS` – frequency of the cleanup loop in seconds. Defaults
+  to `300`. Values lower than `1` are coerced to `1` to avoid busy looping.
+* `CACHE_ENTRY_MAX_AGE_SECS` – optional override for the maximum age of a cache
+  entry. When set, entries are considered expired after the minimum between the
+  stored TTL and this value, regardless of the default TTL configured in the
+  database.
+* `CACHE_STORAGE_MAX_BYTES` – optional soft limit for the total size (in bytes)
+  of all cache entries. When the limit is exceeded, the cleanup loop removes the
+  least recently accessed entries until usage drops below the threshold.
