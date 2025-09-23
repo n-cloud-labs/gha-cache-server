@@ -349,6 +349,10 @@ mod tests {
                 url: Url::parse(u).unwrap(),
             }))
         }
+
+        async fn delete(&self, _key: &str) -> anyhow::Result<()> {
+            unimplemented!("not required for tests")
+        }
     }
 
     fn sample_row() -> CacheListRow {

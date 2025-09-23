@@ -8,6 +8,7 @@ use chrono::{DateTime, Utc};
 use futures::StreamExt;
 use google_cloud_auth::credentials::Credentials;
 use google_cloud_auth::credentials::service_account;
+use google_cloud_gax::error::rpc::Code;
 use google_cloud_storage::client::{Storage, StorageControl};
 use google_cloud_storage::model::{Object, compose_object_request::SourceObject};
 use google_cloud_storage::streaming_source::{Payload, SizeHint, StreamingSource};
@@ -260,6 +261,31 @@ impl BlobStore for GcsStore {
             .signer
             .sign(&self.base_url, &self.bucket_name, key, ttl)?;
         Ok(Some(PresignedUrl { url }))
+    }
+
+    async fn delete(&self, key: &str) -> Result<()> {
+        match self
+            .control
+            .delete_object()
+            .set_bucket(self.bucket_resource.clone())
+            .set_object(key.to_string())
+            .send()
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(err) => {
+                if err.status().map(|s| s.code) == Some(Code::NotFound) {
+                    return Ok(());
+                }
+                if err.http_status_code() == Some(404) {
+                    return Ok(());
+                }
+                Err(anyhow!(
+                    "failed to delete object {key} from bucket {}: {err}",
+                    self.bucket_name
+                ))
+            }
+        }
     }
 }
 

@@ -78,3 +78,75 @@ async fn respects_configured_permissions() -> Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn delete_removes_file_and_empty_directories() -> Result<()> {
+    let temp = TempDir::new()?;
+    let store = FsStore::new(PathBuf::from(temp.path()), None, None).await?;
+    let key = "nested/path/cache.bin";
+
+    let upload_id = store.create_multipart(key).await?;
+    let payload = payload_from_bytes(vec![b"contents"]);
+    let etag = store.upload_part(key, &upload_id, 1, payload).await?;
+    store
+        .complete_multipart(key, &upload_id, vec![(1, etag)])
+        .await?;
+
+    let file_path = temp.path().join(key);
+    assert!(file_path.exists(), "cache file should exist after upload");
+
+    store.delete(key).await?;
+
+    assert!(!file_path.exists(), "cache file should be removed");
+    assert!(
+        !temp.path().join("nested/path").exists(),
+        "deep directory should be removed when empty"
+    );
+    assert!(
+        !temp.path().join("nested").exists(),
+        "top-level cache directory should be removed when empty"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn delete_is_idempotent_and_preserves_non_empty_dirs() -> Result<()> {
+    let temp = TempDir::new()?;
+    let store = FsStore::new(PathBuf::from(temp.path()), None, None).await?;
+    let key = "keep/nested/cache.bin";
+
+    let upload_id = store.create_multipart(key).await?;
+    let payload = payload_from_bytes(vec![b"contents"]);
+    let etag = store.upload_part(key, &upload_id, 1, payload).await?;
+    store
+        .complete_multipart(key, &upload_id, vec![(1, etag)])
+        .await?;
+
+    let sibling = temp.path().join("keep/other.bin");
+    if let Some(parent) = sibling.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    tokio::fs::write(&sibling, b"other").await?;
+
+    store.delete(key).await?;
+
+    assert!(
+        !temp.path().join(key).exists(),
+        "cache file should be deleted"
+    );
+    assert!(
+        !temp.path().join("keep/nested").exists(),
+        "empty nested directory should be removed"
+    );
+    assert!(sibling.exists(), "sibling file should be preserved");
+    assert!(
+        temp.path().join("keep").exists(),
+        "parent directory should remain because it still contains files"
+    );
+
+    // Second deletion should be a no-op
+    store.delete(key).await?;
+
+    Ok(())
+}
