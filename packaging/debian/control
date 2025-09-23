@@ -1,7 +1,7 @@
 Source: gha-cache-server
 Section: net
 Priority: optional
-Maintainer: GitHub Actions <actions@github.com>
+Maintainer: Alessandro Chitolina <alekitto@gmail.com>
 Build-Depends: debhelper (>= 13), cargo, rustc, pkg-config
 Standards-Version: 4.6.2
 Homepage: https://github.com/actions/gha-cache-server

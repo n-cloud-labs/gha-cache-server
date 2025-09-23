@@ -1,5 +1,7 @@
 # Repository Contribution Instructions
 
+Maintainer: Alessandro Chitolina <alekitto@gmail.com>
+
 ## Code formatting
 - When your changes include source files (Rust sources, `Cargo.toml`, `Cargo.lock`, or comment-only edits), format the workspace with `cargo fmt --all` before committing.
 - Run `cargo clippy --fix --allow-dirty --allow-staged --all-targets --all-features` whenever source files change.
