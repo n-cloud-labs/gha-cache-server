@@ -1,0 +1,25 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    configure|reconfigure)
+        if ! getent passwd gha-cache-server >/dev/null; then
+            adduser --system --group --home /var/lib/gha-cache-server --no-create-home --shell /usr/sbin/nologin gha-cache-server
+        fi
+
+        install -d -o gha-cache-server -g gha-cache-server -m 0750 /var/lib/gha-cache-server
+        install -d -o gha-cache-server -g gha-cache-server -m 0750 /etc/gha-cache-server
+
+        if [ -f /etc/gha-cache-server/env ]; then
+            chown gha-cache-server:gha-cache-server /etc/gha-cache-server/env
+            chmod 0640 /etc/gha-cache-server/env
+        fi
+
+        if [ -f /etc/gha-cache-server/config.toml ]; then
+            chown gha-cache-server:gha-cache-server /etc/gha-cache-server/config.toml
+            chmod 0640 /etc/gha-cache-server/config.toml
+        fi
+        ;;
+esac
+
+exit 0

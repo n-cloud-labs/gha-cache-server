@@ -1,0 +1,17 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    remove|purge)
+        if [ -d /var/lib/gha-cache-server ]; then
+            find /var/lib/gha-cache-server -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+        fi
+
+        if [ "$1" = "purge" ]; then
+            rm -rf /var/lib/gha-cache-server
+            deluser --quiet --system --remove-home gha-cache-server || true
+        fi
+        ;;
+esac
+
+exit 0

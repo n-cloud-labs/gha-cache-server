@@ -1,0 +1,29 @@
+#!/usr/bin/make -f
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+	# Nothing to configure for Cargo projects.
+	@true
+
+override_dh_auto_build:
+	cargo build --release --locked
+
+override_dh_auto_test:
+	@echo "Skipping tests during Debian package build"
+
+override_dh_auto_install:
+	install -Dm0755 target/release/gha-cache-server $(CURDIR)/debian/gha-cache-server/usr/bin/gha-cache-server
+	install -d $(CURDIR)/debian/gha-cache-server/etc/gha-cache-server
+	install -Dm0644 packaging/config/env $(CURDIR)/debian/gha-cache-server/etc/gha-cache-server/env
+	install -d $(CURDIR)/debian/gha-cache-server/var/lib/gha-cache-server
+
+override_dh_auto_clean:
+	cargo clean
+
+override_dh_fixperms:
+	dh_fixperms
+	chmod 0640 $(CURDIR)/debian/gha-cache-server/etc/gha-cache-server/env || true

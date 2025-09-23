@@ -1,0 +1,43 @@
+# Environment configuration for gha-cache-server.
+#
+# DATABASE_URL is required and selects the metadata database. The URL may
+# point to PostgreSQL, MySQL or SQLite. Refer to README.md for driver details.
+DATABASE_URL=sqlite:///var/lib/gha-cache-server/cache.db
+
+# Listening port for the HTTP server (defaults to 8080 when unset).
+#PORT=8080
+
+# Toggle direct download URLs. Accepts "true" or "false" and defaults to "true".
+#ENABLE_DIRECT_DOWNLOADS=true
+
+# Maximum number of concurrent upload/download operations (defaults to 64).
+#MAX_CONCURRENCY=64
+
+# Request timeout in seconds applied to storage operations (defaults to 3600).
+#REQUEST_TIMEOUT_SECS=3600
+
+# Select the blob storage backend. Supported values: s3 (default), fs, gcs.
+# See docs/configuration.md for the backend-specific settings documented below.
+#BLOB_STORE=s3
+
+# S3 backend configuration.
+#S3_BUCKET=gha-cache
+#AWS_REGION=us-east-1
+#AWS_ENDPOINT_URL=https://s3.example.com
+#S3_FORCE_PATH_STYLE=true
+
+# Filesystem backend configuration.
+#FS_ROOT=/var/lib/gha-cache-server/blobs
+#FS_FILE_MODE=0640
+#FS_DIR_MODE=0750
+
+# Google Cloud Storage backend configuration.
+#GCS_BUCKET=gha-cache
+#GCS_SERVICE_ACCOUNT_JSON={"type":"service_account",...}
+#GCS_SERVICE_ACCOUNT_PATH=/etc/gha-cache-server/gcs-service-account.json
+#GCS_ENDPOINT=https://storage.googleapis.com
+
+# Cleanup settings.
+#CLEANUP_INTERVAL_SECS=300
+#CACHE_ENTRY_MAX_AGE_SECS=
+#CACHE_STORAGE_MAX_BYTES=

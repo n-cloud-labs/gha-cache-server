@@ -1,0 +1,70 @@
+name: Debian package
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'packaging/**'
+      - 'debian/**'
+      - '.github/workflows/debian.yml'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'src/**'
+  pull_request:
+    types:
+      - opened
+      - synchronize
+    paths:
+      - 'packaging/**'
+      - 'debian/**'
+      - '.github/workflows/debian.yml'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'src/**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-deb:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential debhelper pkg-config cargo rustc
+
+      - name: Install Rust toolchain
+        run: |
+          if ! command -v rustup >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          fi
+          source "$HOME/.cargo/env"
+          rustup toolchain install stable
+          rustup default stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Build Debian package
+        run: |
+          export DEB_BUILD_OPTIONS=nocheck
+          dpkg-buildpackage -us -uc -b
+
+      - name: Collect Debian artifacts
+        run: |
+          mkdir -p artifacts
+          shopt -s nullglob
+          for file in ../*.deb ../*.buildinfo ../*.changes; do
+            [ -e "$file" ] || continue
+            mv "$file" artifacts/
+          done
+
+      - name: Upload Debian artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: gha-cache-server-deb
+          path: artifacts/*
+          if-no-files-found: error
