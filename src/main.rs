@@ -1,4 +1,5 @@
 mod api;
+mod cleanup;
 mod config;
 mod error;
 mod http;
@@ -74,11 +75,29 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Router
-    let app: Router = build_router(pool, store, &cfg);
+    let app: Router = build_router(pool.clone(), store.clone(), &cfg);
+
+    // Background cleanup loop
+    let cleanup_settings = cfg.cleanup.clone();
+    let cleanup_pool = pool.clone();
+    let cleanup_store = store.clone();
+    let cleanup_task = tokio::spawn(async move {
+        cleanup::run_cleanup_loop(cleanup_pool, cleanup_store, cleanup_settings).await;
+    });
 
     let addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), cfg.port);
     tracing::info!(%addr, "listening");
-    axum::serve(tokio::net::TcpListener::bind(addr).await?, app).await?;
+    let server = axum::serve(tokio::net::TcpListener::bind(addr).await?, app);
+    let result = server.await;
+
+    cleanup_task.abort();
+    if let Err(err) = cleanup_task.await
+        && err.is_panic()
+    {
+        std::panic::resume_unwind(err.into_panic());
+    }
+
+    result?;
     Ok(())
 }
 

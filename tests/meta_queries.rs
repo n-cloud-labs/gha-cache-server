@@ -2,6 +2,7 @@ use chrono::Utc;
 use gha_cache_server::meta::{self, CacheEntry};
 use sqlx::AnyPool;
 use sqlx::any::AnyPoolOptions;
+use std::time::Duration;
 use uuid::Uuid;
 
 async fn setup_pool() -> AnyPool {
@@ -55,11 +56,30 @@ async fn expired_entry_ids_returns_only_expired_entries() {
     set_entry_fields(&pool, &boundary, 1, 99, 1).await;
 
     let now = chrono::DateTime::<Utc>::from_timestamp(100, 0).expect("timestamp");
-    let ids = meta::expired_entry_ids(&pool, now)
+    let entries = meta::expired_entries(&pool, now, None)
         .await
-        .expect("fetch expired ids");
+        .expect("fetch expired entries");
 
+    let ids: Vec<Uuid> = entries.into_iter().map(|entry| entry.id).collect();
     assert_eq!(ids, vec![expired.id]);
+}
+
+#[tokio::test]
+async fn expired_entries_respect_age_override() {
+    let pool = setup_pool().await;
+    let old = create_entry(&pool, "old").await;
+    let newer = create_entry(&pool, "newer").await;
+
+    set_entry_fields(&pool, &old, 0, 1_000, 1).await;
+    set_entry_fields(&pool, &newer, 80, 1_000, 1).await;
+
+    let now = chrono::DateTime::<Utc>::from_timestamp(100, 0).expect("timestamp");
+    let entries = meta::expired_entries(&pool, now, Some(Duration::from_secs(30)))
+        .await
+        .expect("fetch expired entries");
+
+    let ids: Vec<Uuid> = entries.into_iter().map(|entry| entry.id).collect();
+    assert_eq!(ids, vec![old.id]);
 }
 
 #[tokio::test]

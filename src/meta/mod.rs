@@ -1,7 +1,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{AnyPool, Row};
+use std::convert::TryFrom;
 use std::io;
+use std::time::Duration;
 use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -146,18 +148,44 @@ pub async fn delete_entry(pool: &AnyPool, id: Uuid) -> Result<(), sqlx::Error> {
 }
 
 #[allow(dead_code)]
+pub async fn expired_entries(
+    pool: &AnyPool,
+    now: DateTime<Utc>,
+    max_entry_age: Option<Duration>,
+) -> Result<Vec<CacheEntry>, sqlx::Error> {
+    let ts = now.timestamp();
+
+    let rows = if let Some(limit) = max_entry_age {
+        let secs = i64::try_from(limit.as_secs()).unwrap_or(i64::MAX);
+        sqlx::query(
+            "SELECT id, org, repo, cache_key, scope, size_bytes, checksum, storage_key, created_at, last_access_at, ttl_seconds \
+FROM cache_entries WHERE last_access_at + CASE WHEN ttl_seconds > ? THEN ? ELSE ttl_seconds END < ? ORDER BY last_access_at ASC",
+        )
+        .bind(secs)
+        .bind(secs)
+        .bind(ts)
+        .fetch_all(pool)
+        .await?
+    } else {
+        sqlx::query(
+            "SELECT id, org, repo, cache_key, scope, size_bytes, checksum, storage_key, created_at, last_access_at, ttl_seconds \
+FROM cache_entries WHERE last_access_at + ttl_seconds < ? ORDER BY last_access_at ASC",
+        )
+        .bind(ts)
+        .fetch_all(pool)
+        .await?
+    };
+
+    rows.into_iter().map(map_cache_entry).collect()
+}
+
+#[allow(dead_code)]
 pub async fn expired_entry_ids(
     pool: &AnyPool,
     now: DateTime<Utc>,
 ) -> Result<Vec<Uuid>, sqlx::Error> {
-    let ts = now.timestamp();
-    let ids: Vec<String> =
-        sqlx::query_scalar("SELECT id FROM cache_entries WHERE last_access_at + ttl_seconds < ?")
-            .bind(ts)
-            .fetch_all(pool)
-            .await?;
-
-    ids.into_iter().map(parse_uuid).collect()
+    let entries = expired_entries(pool, now, None).await?;
+    Ok(entries.into_iter().map(|entry| entry.id).collect())
 }
 
 #[allow(dead_code)]

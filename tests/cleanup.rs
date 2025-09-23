@@ -1,0 +1,166 @@
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+
+use gha_cache_server::cleanup;
+use gha_cache_server::config::CleanupSettings;
+use gha_cache_server::meta::{self, CacheEntry};
+use gha_cache_server::storage::BlobStore;
+use gha_cache_server::storage::fs::FsStore;
+use sqlx::AnyPool;
+use sqlx::any::AnyPoolOptions;
+use tempfile::TempDir;
+use tokio::fs;
+use tokio::task::yield_now;
+
+async fn setup_pool() -> AnyPool {
+    sqlx::any::install_default_drivers();
+    let pool = AnyPoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect sqlite");
+    sqlx::migrate!("./migrations/sqlite")
+        .run(&pool)
+        .await
+        .expect("run migrations");
+    pool
+}
+
+async fn create_entry_with_file(
+    pool: &AnyPool,
+    store_root: &Path,
+    key: &str,
+    last_access: i64,
+    ttl: i64,
+    contents: &[u8],
+) -> CacheEntry {
+    let entry = meta::create_entry(pool, "org", "repo", key, "scope", key)
+        .await
+        .expect("create entry");
+
+    let path = store_root.join(&entry.storage_key);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .await
+            .expect("create storage directories");
+    }
+    fs::write(&path, contents)
+        .await
+        .expect("write entry contents");
+
+    sqlx::query(
+        "UPDATE cache_entries SET last_access_at = ?, ttl_seconds = ?, size_bytes = ? WHERE id = ?",
+    )
+    .bind(last_access)
+    .bind(ttl)
+    .bind(contents.len() as i64)
+    .bind(entry.id.to_string())
+    .execute(pool)
+    .await
+    .expect("update entry fields");
+
+    entry
+}
+
+#[tokio::test]
+async fn cleanup_removes_expired_entries_and_files() {
+    let pool = setup_pool().await;
+    let temp_dir = TempDir::new().expect("temp dir");
+    let store = Arc::new(
+        FsStore::new(temp_dir.path().to_path_buf(), None, None)
+            .await
+            .expect("create store"),
+    );
+
+    let now = chrono::Utc::now().timestamp();
+    let _expired =
+        create_entry_with_file(&pool, temp_dir.path(), "expired", now - 100, 10, b"payload").await;
+
+    let settings = CleanupSettings {
+        interval: Duration::from_millis(50),
+        max_entry_age: None,
+        max_total_bytes: None,
+    };
+
+    let cleanup_pool = pool.clone();
+    let cleanup_store: Arc<dyn BlobStore> = store.clone();
+    let handle = tokio::spawn(async move {
+        cleanup::run_cleanup_loop(cleanup_pool, cleanup_store, settings).await;
+    });
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    yield_now().await;
+
+    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(1) FROM cache_entries")
+        .fetch_one(&pool)
+        .await
+        .expect("count entries");
+    assert_eq!(remaining, 0);
+
+    let path = temp_dir.path().join("expired");
+    assert!(fs::metadata(&path).await.is_err(), "file should be removed");
+
+    handle.abort();
+    let _ = handle.await;
+}
+
+#[tokio::test]
+async fn cleanup_enforces_size_limit() {
+    let pool = setup_pool().await;
+    let temp_dir = TempDir::new().expect("temp dir");
+    let store = Arc::new(
+        FsStore::new(temp_dir.path().to_path_buf(), None, None)
+            .await
+            .expect("create store"),
+    );
+
+    let base = chrono::Utc::now().timestamp();
+    let _older = create_entry_with_file(
+        &pool,
+        temp_dir.path(),
+        "older",
+        base - 200,
+        1_000,
+        b"abcdefgh",
+    )
+    .await;
+    let newer = create_entry_with_file(
+        &pool,
+        temp_dir.path(),
+        "newer",
+        base - 100,
+        1_000,
+        b"ijklmnop",
+    )
+    .await;
+
+    let settings = CleanupSettings {
+        interval: Duration::from_millis(50),
+        max_entry_age: None,
+        max_total_bytes: Some(8),
+    };
+
+    let cleanup_pool = pool.clone();
+    let cleanup_store: Arc<dyn BlobStore> = store.clone();
+    let handle = tokio::spawn(async move {
+        cleanup::run_cleanup_loop(cleanup_pool, cleanup_store, settings).await;
+    });
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    yield_now().await;
+
+    let remaining_ids: Vec<String> =
+        sqlx::query_scalar("SELECT id FROM cache_entries ORDER BY cache_key")
+            .fetch_all(&pool)
+            .await
+            .expect("fetch remaining ids");
+    assert_eq!(remaining_ids.len(), 1);
+    assert_eq!(remaining_ids[0], newer.id.to_string());
+
+    assert!(fs::metadata(temp_dir.path().join("older")).await.is_err());
+    assert!(fs::metadata(temp_dir.path().join("newer")).await.is_ok());
+
+    handle.abort();
+    let _ = handle.await;
+}

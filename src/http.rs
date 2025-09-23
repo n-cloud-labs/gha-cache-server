@@ -123,7 +123,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::api::proxy::{self, ProxyHttpClient, RESULTS_RECEIVER_ORIGIN};
-    use crate::config::{BlobStoreSelector, Config, DatabaseDriver, S3Config};
+    use crate::config::{BlobStoreSelector, CleanupSettings, Config, DatabaseDriver, S3Config};
     use crate::storage::{BlobStore, PresignedUrl};
 
     #[derive(Clone, Debug)]
@@ -251,6 +251,11 @@ mod tests {
             }),
             fs: None,
             gcs: None,
+            cleanup: CleanupSettings {
+                interval: Duration::from_secs(300),
+                max_entry_age: None,
+                max_total_bytes: None,
+            },
         }
     }
 
