@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS cache_uploads (
     id VARCHAR(36) PRIMARY KEY,
     entry_id VARCHAR(36),
     upload_id VARCHAR(255) NOT NULL UNIQUE,
-    parts_json LONGTEXT NOT NULL DEFAULT '[]',
+    parts_json LONGTEXT NOT NULL,
     state VARCHAR(32) NOT NULL CHECK (state IN ('reserved','uploading','committed','aborted')),
     created_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP()),
     updated_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP()),
