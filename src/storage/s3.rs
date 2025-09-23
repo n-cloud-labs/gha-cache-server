@@ -170,6 +170,16 @@ impl BlobStore for S3Store {
         let url: url::Url = presigned.uri().to_string().parse()?;
         Ok(Some(PresignedUrl { url }))
     }
+
+    async fn delete(&self, key: &str) -> anyhow::Result<()> {
+        self.client
+            .delete_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

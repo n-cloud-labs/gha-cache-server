@@ -41,4 +41,7 @@ pub trait BlobStore: Send + Sync + 'static {
     ) -> anyhow::Result<()>;
 
     async fn presign_get(&self, key: &str, ttl: Duration) -> anyhow::Result<Option<PresignedUrl>>;
+
+    #[allow(dead_code)]
+    async fn delete(&self, key: &str) -> anyhow::Result<()>;
 }

@@ -228,6 +228,10 @@ mod tests {
         ) -> anyhow::Result<Option<PresignedUrl>> {
             Ok(None)
         }
+
+        async fn delete(&self, _key: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
     }
 
     fn test_config() -> Config {

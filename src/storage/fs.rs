@@ -1,3 +1,4 @@
+use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
@@ -250,5 +251,45 @@ impl BlobStore for FsStore {
 
     async fn presign_get(&self, _key: &str, _ttl: Duration) -> Result<Option<PresignedUrl>> {
         Ok(None)
+    }
+
+    async fn delete(&self, key: &str) -> Result<()> {
+        let path = self.destination_path(key)?;
+        match fs::remove_file(&path).await {
+            Ok(()) => {}
+            Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("failed to remove blob at {}", path.display()));
+            }
+        }
+
+        let mut current = path.parent().map(|p| p.to_path_buf());
+        while let Some(dir) = current.clone() {
+            if dir == self.root {
+                break;
+            }
+            if !dir.starts_with(&self.root) {
+                break;
+            }
+
+            let next = dir.parent().map(|p| p.to_path_buf());
+            match fs::remove_dir(&dir).await {
+                Ok(()) => {
+                    current = next;
+                }
+                Err(ref err) if err.kind() == ErrorKind::NotFound => {
+                    current = next;
+                }
+                Err(err) if err.kind() == ErrorKind::DirectoryNotEmpty => break,
+                Err(err) => {
+                    return Err(err).with_context(|| {
+                        format!("failed to remove empty directory {}", dir.display())
+                    });
+                }
+            }
+        }
+
+        Ok(())
     }
 }
