@@ -28,7 +28,7 @@ allowing workflows to interact with a privately managed cache backend.
 %build
 export CARGO_HOME=%{_builddir}/.cargo
 export CARGO_TARGET_DIR=%{_builddir}/target
-cargo build --release --locked
+cargo build --release --locked --jobs=1
 
 %install
 rm -rf %{buildroot}

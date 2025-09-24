@@ -10,7 +10,7 @@ override_dh_auto_configure:
 	@true
 
 override_dh_auto_build:
-	cargo build --release --locked
+	cargo build --release --locked --jobs=1
 
 override_dh_auto_test:
 	@echo "Skipping tests during Debian package build"
