@@ -1,0 +1,10 @@
+/target
+/.git
+/.github
+/tests
+/docs
+/_data
+/debian
+/packaging
+/migrations/*.sql.swp
+.DS_Store
