@@ -8,6 +8,7 @@ mod obs;
 mod storage;
 
 use axum::Router;
+use clap::Parser;
 use sqlx::{AnyPool, any::AnyPoolOptions, migrate::Migrator};
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
@@ -22,8 +23,16 @@ static PG_MIGRATOR: Migrator = sqlx::migrate!("./migrations/postgres");
 static MYSQL_MIGRATOR: Migrator = sqlx::migrate!("./migrations/mysql");
 static SQLITE_MIGRATOR: Migrator = sqlx::migrate!("./migrations/sqlite");
 
+#[derive(Parser)]
+struct Cli {
+    /// Run migrations and exit
+    #[arg(long)]
+    migrate_only: bool,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
     obs::init_tracing();
     let cfg = Config::from_env()?;
 
@@ -40,6 +49,9 @@ async fn main() -> anyhow::Result<()> {
     }
 
     run_migrations(&pool, cfg.database_driver).await?;
+    if cli.migrate_only {
+        return Ok(());
+    }
 
     // Storage backend
     let store: Arc<dyn BlobStore> = match cfg.blob_store {
