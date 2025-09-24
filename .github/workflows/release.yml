@@ -1,0 +1,414 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CHART_DIR: deploy/charts/gha-cache-server
+
+jobs:
+  prepare:
+    name: Prepare release metadata
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.vars.outputs.version }}
+      pkgver: ${{ steps.vars.outputs.pkgver }}
+      image: ${{ steps.vars.outputs.image }}
+      helm_repo_url: ${{ steps.vars.outputs.helm_repo_url }}
+      release_name: ${{ steps.vars.outputs.release_name }}
+      prerelease: ${{ steps.vars.outputs.prerelease }}
+    steps:
+      - name: Compute variables
+        id: vars
+        env:
+          IMAGE_OVERRIDE: ${{ vars.RELEASE_IMAGE_NAME }}
+          HELM_REPO_URL_OVERRIDE: ${{ vars.HELM_REPOSITORY_URL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          pkgver="${version//-/_}"
+          repo="${GITHUB_REPOSITORY,,}"
+          image="ghcr.io/${repo}"
+          if [[ -n "${IMAGE_OVERRIDE:-}" ]]; then
+            image="${IMAGE_OVERRIDE}"
+          fi
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          repo_name="${GITHUB_REPOSITORY##*/}"
+          helm_repo_url="https://${owner}.github.io/${repo_name}"
+          if [[ -n "${HELM_REPO_URL_OVERRIDE:-}" ]]; then
+            helm_repo_url="${HELM_REPO_URL_OVERRIDE}"
+          fi
+          prerelease="false"
+          if [[ "${version}" == *-* ]]; then
+            prerelease="true"
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "pkgver=${pkgver}" >> "${GITHUB_OUTPUT}"
+          echo "image=${image}" >> "${GITHUB_OUTPUT}"
+          echo "helm_repo_url=${helm_repo_url}" >> "${GITHUB_OUTPUT}"
+          echo "release_name=gha-cache-server ${version}" >> "${GITHUB_OUTPUT}"
+          echo "prerelease=${prerelease}" >> "${GITHUB_OUTPUT}"
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: prepare
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [debian, rpm, arch, docker, helm]
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      PACKAGE_VERSION: ${{ needs.prepare.outputs.pkgver }}
+      IMAGE_NAME: ${{ needs.prepare.outputs.image }}
+      HELM_REPO_URL: ${{ needs.prepare.outputs.helm_repo_url }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Checkout Pages branch
+        if: matrix.target == 'helm'
+        uses: actions/checkout@v5
+        with:
+          ref: gh-pages
+          path: gh-pages
+        continue-on-error: true
+
+      - name: Install Rust toolchain
+        if: matrix.target == 'debian'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          profile: minimal
+
+      - name: Install Debian build dependencies
+        if: matrix.target == 'debian'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential debhelper devscripts dpkg-sig pkg-config
+
+      - name: Prepare Debian metadata
+        if: matrix.target == 'debian'
+        env:
+          DEBFULLNAME: GitHub Actions
+          DEBEMAIL: actions@users.noreply.github.com
+        run: |
+          set -euo pipefail
+          deb_version="${RELEASE_VERSION}-1"
+          dch --distribution unstable --newversion "${deb_version}" "Automated release ${RELEASE_VERSION}"
+          dch --distribution unstable --release ""
+
+      - name: Build Debian package
+        if: matrix.target == 'debian'
+        run: |
+          set -euo pipefail
+          export DEB_BUILD_OPTIONS=nocheck
+          dpkg-buildpackage -us -uc -b
+          mkdir -p dist
+          shopt -s nullglob
+          for file in ../*.deb ../*.buildinfo ../*.changes; do
+            [[ -e "$file" ]] || continue
+            cp "$file" dist/
+          done
+
+      - name: Sign Debian packages
+        if: matrix.target == 'debian' && secrets.DEB_SIGNING_KEY != '' && secrets.DEB_SIGNING_KEY_ID != ''
+        env:
+          DEB_SIGNING_KEY: ${{ secrets.DEB_SIGNING_KEY }}
+          DEB_SIGNING_KEY_ID: ${{ secrets.DEB_SIGNING_KEY_ID }}
+          DEB_SIGNING_PASSPHRASE: ${{ secrets.DEB_SIGNING_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.gnupg
+          chmod 700 ~/.gnupg
+          gpg --batch --import <<'__DEB_KEY__'
+${DEB_SIGNING_KEY}
+__DEB_KEY__
+          gpgconf --kill gpg-agent || true
+          for package in dist/*.deb; do
+            if [[ -f "$package" ]]; then
+              gpg_opts="--batch --yes --pinentry-mode loopback"
+              if [[ -n "${DEB_SIGNING_PASSPHRASE}" ]]; then
+                gpg_opts+=" --passphrase ${DEB_SIGNING_PASSPHRASE}"
+              fi
+              dpkg-sig --sign builder --key "${DEB_SIGNING_KEY_ID}" --gpg-options "${gpg_opts}" "$package"
+            fi
+          done
+
+      - name: Install RPM tooling
+        if: matrix.target == 'rpm'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm rpm2cpio cpio expect
+          mkdir -p dist
+
+      - name: Build RPM package
+        if: matrix.target == 'rpm'
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -e RELEASE_VERSION="${RELEASE_VERSION}" \
+            -v "$PWD":/src \
+            -w /src \
+            registry.fedoraproject.org/fedora:42 \
+            bash -c '
+              set -euo pipefail
+              echo "fastestmirror=True" >> /etc/dnf/dnf.conf
+              echo "max_parallel_downloads=10" >> /etc/dnf/dnf.conf
+              echo "keepcache=True" >> /etc/dnf/dnf.conf
+              dnf -y update
+              dnf -y groupinstall "Development Tools"
+              dnf -y install rpm-build rpmdevtools systemd-rpm-macros cmake pkgconfig git curl which tar
+              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+              source "$HOME/.cargo/env"
+              rustup default stable
+              git config --global --add safe.directory /src
+              rpmdev-setuptree
+              sed -i "s/^Version:.*/Version:        ${RELEASE_VERSION}/" packaging/rpm/gha-cache-server.spec
+              git archive --format=tar --prefix=gha-cache-server-${RELEASE_VERSION}/ HEAD | gzip > /root/rpmbuild/SOURCES/gha-cache-server-${RELEASE_VERSION}.tar.gz
+              cp packaging/rpm/gha-cache-server.spec /root/rpmbuild/SPECS/
+              rpmbuild -ba /root/rpmbuild/SPECS/gha-cache-server.spec
+              find /root/rpmbuild/RPMS -type f -name "*.rpm" -exec cp {} /src/dist/ \;
+              find /root/rpmbuild/SRPMS -type f -name "*.src.rpm" -exec cp {} /src/dist/ \;
+            '
+          sudo chown -R $(id -u):$(id -g) dist
+
+      - name: Sign RPM packages
+        if: matrix.target == 'rpm' && secrets.RPM_SIGNING_KEY != '' && secrets.RPM_SIGNING_KEY_ID != ''
+        env:
+          RPM_SIGNING_KEY: ${{ secrets.RPM_SIGNING_KEY }}
+          RPM_SIGNING_KEY_ID: ${{ secrets.RPM_SIGNING_KEY_ID }}
+          RPM_SIGNING_PASSPHRASE: ${{ secrets.RPM_SIGNING_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.gnupg
+          chmod 700 ~/.gnupg
+          gpg --batch --import <<'__RPM_KEY__'
+${RPM_SIGNING_KEY}
+__RPM_KEY__
+          cat <<'__RPM_MACROS__' > ~/.rpmmacros
+%_signature gpg
+%_gpg_name ${RPM_SIGNING_KEY_ID}
+%_gpg_path ~/.gnupg
+%__gpg /usr/bin/gpg
+%_gpg_digest_algo sha256
+__RPM_MACROS__
+          gpgconf --kill gpg-agent || true
+          shopt -s nullglob
+          for package in dist/*.rpm; do
+            if [[ -n "${RPM_SIGNING_PASSPHRASE}" ]]; then
+              expect <<'__RPM_EXPECT__'
+set timeout -1
+spawn rpm --addsign "${package}"
+expect "Enter pass phrase:"
+send "${RPM_SIGNING_PASSPHRASE}\r"
+expect eof
+__RPM_EXPECT__
+            else
+              rpm --addsign "${package}"
+            fi
+          done
+
+      - name: Build Arch package
+        if: matrix.target == 'arch'
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          docker run --rm \
+            -e RELEASE_VERSION="${RELEASE_VERSION}" \
+            -e PACKAGE_VERSION="${PACKAGE_VERSION}" \
+            -v "$PWD":/src \
+            -w /src \
+            archlinux:latest \
+            bash -c '
+              set -euo pipefail
+              pacman -Sy --noconfirm archlinux-keyring
+              pacman -Syu --noconfirm base-devel git rustup
+              useradd -m builder
+              echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers.d/builder
+              chmod 0440 /etc/sudoers.d/builder
+              chown builder:builder /src -R
+              su builder -c "
+                set -euo pipefail
+                cd /src
+                rustup install stable
+                rustup default stable
+                sed -i \"s/^pkgver=.*/pkgver=${PACKAGE_VERSION}/\" packaging/arch/PKGBUILD
+                sed -i \"s/^pkgrel=.*/pkgrel=1/\" packaging/arch/PKGBUILD
+                cd packaging/arch
+                makepkg --clean --cleanbuild --syncdeps --noconfirm
+                cp *.pkg.tar.zst /src/dist/
+              "
+            '
+          sudo chown -R $(id -u):$(id -g) dist
+
+      - name: Set up QEMU
+        if: matrix.target == 'docker'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: matrix.target == 'docker'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        if: matrix.target == 'docker'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        if: matrix.target == 'docker'
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ needs.prepare.outputs.image }}
+          tags: |
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+
+      - name: Build and push image
+        if: matrix.target == 'docker'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=release-image
+          cache-to: type=gha,mode=max,scope=release-image
+
+      - name: Install cosign
+        if: matrix.target == 'docker' || matrix.target == 'helm'
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: v2.2.4
+
+      - name: Sign container image
+        if: matrix.target == 'docker' && secrets.COSIGN_KEY != ''
+        env:
+          COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${COSIGN_KEY}" > cosign.key
+          chmod 600 cosign.key
+          printf '%s\n' "${{ steps.meta.outputs.tags }}" | while read -r tag; do
+            [[ -n "$tag" ]] || continue
+            cosign sign --key cosign.key "$tag"
+          done
+
+      - name: Install Helm
+        if: matrix.target == 'helm'
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.13.3
+
+      - name: Package Helm chart
+        if: matrix.target == 'helm'
+        run: |
+          set -euo pipefail
+          mkdir -p chart-dist repo dist
+          helm dependency update "${CHART_DIR}"
+          helm package "${CHART_DIR}" --version "${RELEASE_VERSION}" --app-version "${RELEASE_VERSION}" --destination chart-dist
+          cp chart-dist/*.tgz dist/
+          if [[ -d gh-pages ]]; then
+            cp gh-pages/*.tgz repo/ 2>/dev/null || true
+            if [[ -f gh-pages/index.yaml ]]; then
+              cp gh-pages/index.yaml repo/_index.yaml
+            fi
+          fi
+          cp chart-dist/*.tgz repo/
+          if [[ -f repo/_index.yaml ]]; then
+            helm repo index repo --url "${HELM_REPO_URL}" --merge repo/_index.yaml
+            rm repo/_index.yaml
+          else
+            helm repo index repo --url "${HELM_REPO_URL}"
+          fi
+
+      - name: Sign Helm chart
+        if: matrix.target == 'helm' && secrets.COSIGN_KEY != ''
+        env:
+          COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${COSIGN_KEY}" > cosign.key
+          chmod 600 cosign.key
+          for chart in chart-dist/*.tgz; do
+            cosign sign-blob --key cosign.key --output-signature "${chart}.sig" "$chart"
+            cp "${chart}.sig" dist/
+          done
+
+      - name: Publish Helm repository
+        if: matrix.target == 'helm'
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: repo
+          keep_files: true
+          user_name: github-actions
+          user_email: github-actions@github.com
+
+      - name: Upload release artifacts
+        if: matrix.target != 'docker'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/**
+          if-no-files-found: warn
+
+  release:
+    name: Publish GitHub release
+    needs:
+      - prepare
+      - build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Show collected artifacts
+        run: |
+          ls -R dist
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ needs.prepare.outputs.release_name }}
+          draft: false
+          prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
+          generate_release_notes: true
+          files: |
+            dist/**/*.deb
+            dist/**/*.buildinfo
+            dist/**/*.changes
+            dist/**/*.rpm
+            dist/**/*.pkg.tar.zst
+            dist/**/*.tgz
+            dist/**/*.sig
