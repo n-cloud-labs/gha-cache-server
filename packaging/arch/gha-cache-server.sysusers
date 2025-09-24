@@ -1,0 +1,3 @@
+# sysusers.d snippet to provision the gha-cache-server account.
+g gha-cache-server - -
+u gha-cache-server - "GHA Cache Server service account" /var/lib/gha-cache-server /usr/bin/nologin
