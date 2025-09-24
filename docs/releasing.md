@@ -29,6 +29,60 @@ Before cutting a release make sure the following requirements are satisfied:
   - `HELM_REPOSITORY_URL` sets the public URL for the Helm repository if it is
     not hosted at `https://<owner>.github.io/<repo>`.
 
+## Generating signing keys
+
+Create dedicated signing material for the packaging and container workflows.
+Export the private keys in ASCII-armored form so they can be stored as GitHub
+secrets, and keep the public certificates in a safe place so downstream users
+can verify signatures.
+
+### Debian (`dpkg-sig`)
+
+1. Generate a signing-only OpenPGP key with a descriptive identity:
+   ```bash
+   gpg --quick-generate-key "gha-cache-server Debian Signing <release@example.com>" rsa4096 sign 1y
+   ```
+2. Retrieve the key ID from `gpg --list-secret-keys` and export the armored
+   private key and optional revocation certificate:
+   ```bash
+   gpg --armor --export-secret-keys KEYID > deb-signing-key.asc
+   gpg --armor --output deb-signing-key.rev --gen-revoke KEYID
+   ```
+3. Store the contents of `deb-signing-key.asc` inside the `DEB_SIGNING_KEY`
+   secret (and the passphrase in `DEB_SIGNING_PASSPHRASE` when set). Keep the
+   revocation certificate offline so the key can be revoked if compromised.
+
+### RPM (`rpm --addsign`)
+
+1. Create a dedicated OpenPGP key, optionally reusing the same identity as for
+   Debian packages:
+   ```bash
+   gpg --quick-generate-key "gha-cache-server RPM Signing <release@example.com>" rsa4096 sign 1y
+   ```
+2. Export the key in ASCII-armored form and record the key ID:
+   ```bash
+   gpg --armor --export-secret-keys KEYID > rpm-signing-key.asc
+   gpg --armor --export KEYID > rpm-signing-key.pub
+   ```
+3. Configure the `RPM_SIGNING_KEY`, `RPM_SIGNING_KEY_ID`, and optional
+   `RPM_SIGNING_PASSPHRASE` secrets with the exported private key, its ID, and
+   passphrase. Publish the public key (`rpm-signing-key.pub`) so consumers can
+   import it into their RPM keyring.
+
+### Cosign (container image and Helm chart)
+
+1. Install Cosign locally and generate a new key pair:
+   ```bash
+   cosign generate-key-pair
+   ```
+   The command produces `cosign.key` (private key) and `cosign.pub` (public
+   certificate). Provide the `COSIGN_PASSWORD` when prompted to encrypt the
+   private key, or press Enter to keep it unencrypted.
+2. Upload the private key to the `COSIGN_KEY` secret and, if applicable, the
+   password to the `COSIGN_PASSWORD` secret. Publish the public certificate so
+   users can verify the container image and chart signatures with
+   `cosign verify`.
+
 ## Cutting a release
 
 1. Merge all code destined for the release into the default branch.
