@@ -7,12 +7,10 @@ License:        MIT
 URL:            https://github.com/n-cloud-labs/gha-cache-server
 Source0:        %{name}-%{version}.tar.gz
 
-BuildRequires:  cargo
 BuildRequires:  cmake
 BuildRequires:  gcc
 BuildRequires:  make
 BuildRequires:  pkgconfig
-BuildRequires:  rust
 BuildRequires:  systemd-rpm-macros
 Requires:       systemd
 Requires(post): shadow-utils
