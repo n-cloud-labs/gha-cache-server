@@ -1,0 +1,3 @@
+# tmpfiles.d entries for gha-cache-server runtime directories.
+d /var/lib/gha-cache-server 0750 gha-cache-server gha-cache-server -
+d /etc/gha-cache-server 0750 gha-cache-server gha-cache-server -

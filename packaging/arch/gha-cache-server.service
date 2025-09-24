@@ -1,0 +1,18 @@
+[Unit]
+Description=GitHub Actions cache compatibility server
+Documentation=https://github.com/n-cloud-labs/gha-cache-server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gha-cache-server
+Group=gha-cache-server
+EnvironmentFile=/etc/gha-cache-server/env
+ExecStart=/usr/bin/gha-cache-server
+WorkingDirectory=/var/lib/gha-cache-server
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
