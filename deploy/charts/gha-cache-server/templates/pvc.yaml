@@ -1,0 +1,19 @@
+{{- if and .Values.fsBackend.enabled (not .Values.fsBackend.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "gha-cache-server.fullname" . }}-fs
+  labels:
+    {{- include "gha-cache-server.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- range .Values.fsBackend.accessModes }}
+    - {{ . }}
+    {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.fsBackend.size }}
+  {{- with .Values.fsBackend.storageClassName }}
+  storageClassName: {{ . }}
+  {{- end }}
+{{- end }}

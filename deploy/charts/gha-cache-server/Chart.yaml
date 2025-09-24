@@ -1,0 +1,17 @@
+apiVersion: v2
+name: gha-cache-server
+description: A Helm chart for deploying the GitHub Actions cache compatible server
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - github
+  - actions
+  - cache
+  - gha
+  - ci
+maintainers:
+  - name: N Cloud Labs
+    email: oss@ncloudlabs.dev
+sources:
+  - https://github.com/n-cloud-labs/gha-cache-server

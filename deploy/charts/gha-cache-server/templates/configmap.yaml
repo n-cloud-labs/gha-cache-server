@@ -1,0 +1,12 @@
+{{- if and (not .Values.env.existingConfigMap) (gt (len .Values.env.config) 0) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "gha-cache-server.fullname" . }}
+  labels:
+    {{- include "gha-cache-server.labels" . | nindent 4 }}
+data:
+  {{- range $key, $value := .Values.env.config }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}
+{{- end }}
