@@ -124,7 +124,7 @@ jobs:
           done
 
       - name: Sign Debian packages
-        if: matrix.target == 'debian' && secrets.DEB_SIGNING_KEY != '' && secrets.DEB_SIGNING_KEY_ID != ''
+        if: matrix.target == 'debian'
         env:
           DEB_SIGNING_KEY: ${{ secrets.DEB_SIGNING_KEY }}
           DEB_SIGNING_KEY_ID: ${{ secrets.DEB_SIGNING_KEY_ID }}
@@ -134,8 +134,8 @@ jobs:
           mkdir -p ~/.gnupg
           chmod 700 ~/.gnupg
           gpg --batch --import <<'__DEB_KEY__'
-${DEB_SIGNING_KEY}
-__DEB_KEY__
+          ${DEB_SIGNING_KEY}
+          __DEB_KEY__
           gpgconf --kill gpg-agent || true
           for package in dist/*.deb; do
             if [[ -f "$package" ]]; then
@@ -188,7 +188,7 @@ __DEB_KEY__
           sudo chown -R $(id -u):$(id -g) dist
 
       - name: Sign RPM packages
-        if: matrix.target == 'rpm' && secrets.RPM_SIGNING_KEY != '' && secrets.RPM_SIGNING_KEY_ID != ''
+        if: matrix.target == 'rpm'
         env:
           RPM_SIGNING_KEY: ${{ secrets.RPM_SIGNING_KEY }}
           RPM_SIGNING_KEY_ID: ${{ secrets.RPM_SIGNING_KEY_ID }}
@@ -198,26 +198,26 @@ __DEB_KEY__
           mkdir -p ~/.gnupg
           chmod 700 ~/.gnupg
           gpg --batch --import <<'__RPM_KEY__'
-${RPM_SIGNING_KEY}
-__RPM_KEY__
+          ${RPM_SIGNING_KEY}
+          __RPM_KEY__
           cat <<'__RPM_MACROS__' > ~/.rpmmacros
-%_signature gpg
-%_gpg_name ${RPM_SIGNING_KEY_ID}
-%_gpg_path ~/.gnupg
-%__gpg /usr/bin/gpg
-%_gpg_digest_algo sha256
-__RPM_MACROS__
+          %_signature gpg
+          %_gpg_name ${RPM_SIGNING_KEY_ID}
+          %_gpg_path ~/.gnupg
+          %__gpg /usr/bin/gpg
+          %_gpg_digest_algo sha256
+          __RPM_MACROS__
           gpgconf --kill gpg-agent || true
           shopt -s nullglob
           for package in dist/*.rpm; do
             if [[ -n "${RPM_SIGNING_PASSPHRASE}" ]]; then
               expect <<'__RPM_EXPECT__'
-set timeout -1
-spawn rpm --addsign "${package}"
-expect "Enter pass phrase:"
-send "${RPM_SIGNING_PASSPHRASE}\r"
-expect eof
-__RPM_EXPECT__
+          set timeout -1
+          spawn rpm --addsign "${package}"
+          expect "Enter pass phrase:"
+          send "${RPM_SIGNING_PASSPHRASE}\r"
+          expect eof
+          __RPM_EXPECT__
             else
               rpm --addsign "${package}"
             fi
@@ -303,7 +303,7 @@ __RPM_EXPECT__
           cosign-release: v2.2.4
 
       - name: Sign container image
-        if: matrix.target == 'docker' && secrets.COSIGN_KEY != ''
+        if: matrix.target == 'docker'
         env:
           COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
@@ -345,7 +345,7 @@ __RPM_EXPECT__
           fi
 
       - name: Sign Helm chart
-        if: matrix.target == 'helm' && secrets.COSIGN_KEY != ''
+        if: matrix.target == 'helm'
         env:
           COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
