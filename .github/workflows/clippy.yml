@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   check-clippy:
-    runs-on: self-hosted
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - name: Install Rust toolchain

@@ -31,8 +31,8 @@ jobs:
       fail-fast: false
       matrix:
         runner:
-          - self-hosted
-          - self-hosted-arm
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     container:
       image: registry.fedoraproject.org/fedora:42

@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   check-postgres:
-    runs-on: self-hosted
+    runs-on: ubuntu-24.04
     env:
       DATABASE_URL: postgres://nimbus:secret@localhost:5432/cache
       DATABASE_DRIVER: postgres
@@ -66,7 +66,7 @@ jobs:
         run: cargo test --all-targets --all-features
 
   check-mysql:
-    runs-on: self-hosted
+    runs-on: ubuntu-24.04
     env:
       DATABASE_URL: mysql://nimbus:secret@localhost:3306/cache
       DATABASE_DRIVER: mysql
@@ -109,7 +109,7 @@ jobs:
         run: cargo test --all-targets --all-features
 
   check-sqlite:
-    runs-on: self-hosted
+    runs-on: ubuntu-24.04
     env:
       DATABASE_URL: sqlite:///tmp/gha-cache.db
       DATABASE_DRIVER: sqlite
