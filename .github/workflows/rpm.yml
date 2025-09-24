@@ -49,6 +49,21 @@ jobs:
           VERSION=$(awk '/^Version:/ { print $2; exit }' packaging/rpm/gha-cache-server.spec)
           git archive --format=tar --prefix=gha-cache-server-${VERSION}/ HEAD | gzip > ~/rpmbuild/SOURCES/gha-cache-server-${VERSION}.tar.gz
           cp packaging/rpm/gha-cache-server.spec ~/rpmbuild/SPECS/
+      - name: Ensure Cargo cache directories
+        run: |
+          mkdir -p ~/rpmbuild/BUILD/.cargo/registry
+          mkdir -p ~/rpmbuild/BUILD/.cargo/git
+          mkdir -p ~/rpmbuild/BUILD/target
+      - name: Cache Cargo build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/rpmbuild/BUILD/.cargo/registry
+            ~/rpmbuild/BUILD/.cargo/git
+            ~/rpmbuild/BUILD/target
+          key: ${{ runner.os }}-rpm-${{ matrix.runner }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-rpm-${{ matrix.runner }}-cargo-
       - name: Build RPM
         run: |
           rpmbuild -ba ~/rpmbuild/SPECS/gha-cache-server.spec
