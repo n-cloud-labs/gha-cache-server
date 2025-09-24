@@ -1,0 +1,32 @@
+name: Helm chart
+
+on:
+  push:
+    paths:
+      - 'deploy/charts/**'
+      - '.github/workflows/helm.yml'
+  pull_request:
+    types:
+      - opened
+      - synchronize
+    paths:
+      - 'deploy/charts/**'
+      - '.github/workflows/helm.yml'
+
+concurrency:
+  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.4
+      - name: Helm lint
+        run: helm lint deploy/charts/gha-cache-server
+      - name: Helm template
+        run: helm template gha-cache deploy/charts/gha-cache-server --values deploy/charts/gha-cache-server/values.yaml

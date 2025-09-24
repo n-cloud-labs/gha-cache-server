@@ -1,0 +1,135 @@
+# Default values for gha-cache-server.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/n-cloud-labs/gha-cache-server
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Specifies whether a service account should be created.
+  create: true
+  # Annotations to add to the service account.
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template.
+  name: ""
+
+rbac:
+  # When true, a Role and RoleBinding are created that allow access to mounted PersistentVolumeClaims.
+  create: false
+  # Extra annotations applied to the generated Role and RoleBinding.
+  annotations: {}
+  # Additional rules that should be appended to the generated Role.
+  extraRules: []
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext: {}
+
+securityContext: {}
+
+service:
+  type: ClusterIP
+  port: 8080
+  annotations: {}
+  labels: {}
+  loadBalancerIP: ""
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: gha-cache.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  limits: {}
+  requests: {}
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: null
+
+env:
+  # Environment variables stored in a ConfigMap. Populate this map with key/value
+  # pairs such as BLOB_STORE, AWS_REGION or cleanup tunables.
+  config: {}
+  # Extra environment variables injected directly into the container definition.
+  extra: []
+  # Sensitive configuration stored inside a Secret. Use this map to set
+  # DATABASE_URL or backend credentials such as AWS_ACCESS_KEY_ID.
+  secret:
+    DATABASE_URL: 'sqlite:///var/run/gha-cache/db.sqlite'
+  # Optional references to pre-existing resources. When set they replace the generated resources.
+  existingConfigMap: ""
+  existingSecret: ""
+  extraEnvFrom: []
+
+fsBackend:
+  enabled: false
+  mountPath: /var/lib/gha-cache
+  # When set, the deployment uses the referenced PersistentVolumeClaim instead of creating one.
+  existingClaim: ""
+  storageClassName: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 100Gi
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+readinessProbe:
+  enabled: true
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+  successThreshold: 1
+
+livenessProbe:
+  enabled: true
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 15
+  periodSeconds: 20
+  timeoutSeconds: 5
+  failureThreshold: 3
+  successThreshold: 1
+
+migrationJob:
+  enabled: false
+  annotations: {}
+  restartPolicy: OnFailure
+  ttlSecondsAfterFinished: 300
+  command: []
+  args:
+    - gha-cache-server
+    - --migrate-only
+  extraEnv: []
+  extraEnvFrom: []
+  resources: {}

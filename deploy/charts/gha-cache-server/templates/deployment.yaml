@@ -1,0 +1,115 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "gha-cache-server.fullname" . }}
+  labels:
+    {{- include "gha-cache-server.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "gha-cache-server.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        {{- include "gha-cache-server.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "gha-cache-server.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: server
+          image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          {{- $configMapName := "" -}}
+          {{- if .Values.env.existingConfigMap -}}
+          {{- $configMapName = .Values.env.existingConfigMap -}}
+          {{- else if gt (len .Values.env.config) 0 -}}
+          {{- $configMapName = include "gha-cache-server.fullname" . -}}
+          {{- end -}}
+          {{- $secretName := "" -}}
+          {{- if .Values.env.existingSecret -}}
+          {{- $secretName = .Values.env.existingSecret -}}
+          {{- else if gt (len .Values.env.secret) 0 -}}
+          {{- $secretName = include "gha-cache-server.fullname" . -}}
+          {{- end -}}
+          {{- $envFrom := list -}}
+          {{- if $configMapName -}}
+          {{- $envFrom = append $envFrom (dict "configMapRef" (dict "name" $configMapName)) -}}
+          {{- end -}}
+          {{- if $secretName -}}
+          {{- $envFrom = append $envFrom (dict "secretRef" (dict "name" $secretName)) -}}
+          {{- end -}}
+          {{- range .Values.env.extraEnvFrom -}}
+          {{- $envFrom = append $envFrom . -}}
+          {{- end -}}
+          {{- if $envFrom }}
+          envFrom:
+            {{- toYaml $envFrom | nindent 12 }}
+          {{- end }}
+          {{- with .Values.env.extra }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if .Values.readinessProbe.enabled }}
+          readinessProbe:
+            {{- toYaml (omit .Values.readinessProbe "enabled") | nindent 12 }}
+          {{- end }}
+          {{- if .Values.livenessProbe.enabled }}
+          livenessProbe:
+            {{- toYaml (omit .Values.livenessProbe "enabled") | nindent 12 }}
+          {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if .Values.fsBackend.enabled }}
+          volumeMounts:
+            - name: storage
+              mountPath: {{ .Values.fsBackend.mountPath }}
+          {{- end }}
+      {{- if .Values.fsBackend.enabled }}
+      volumes:
+        - name: storage
+          {{- if .Values.fsBackend.existingClaim }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.fsBackend.existingClaim }}
+          {{- else }}
+          persistentVolumeClaim:
+            claimName: {{ include "gha-cache-server.fullname" . }}-fs
+          {{- end }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
