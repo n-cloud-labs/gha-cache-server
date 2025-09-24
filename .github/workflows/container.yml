@@ -1,0 +1,105 @@
+name: Container image
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build_package_amd64:
+    name: Build AMD64 Image
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and Push container images
+        uses: docker/build-push-action@v6
+        with:
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha,scope=buildkit
+          cache-to: type=gha,mode=max,scope=buildkit
+
+  build_package_arm64:
+    name: Build ARM64 Image
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and Push container images
+        uses: docker/build-push-action@v6
+        with:
+          platforms: linux/arm64
+          push: false
+          cache-from: type=gha,scope=buildkit-arm
+          cache-to: type=gha,mode=max,scope=buildkit-arm
+
+  build-and-push:
+    needs: [build_package_amd64, build_package_arm64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: |-
+            type=gha,scope=buildkit
+            type=gha,scope=buildkit-arm
+
+      - name: Setup CRANE
+        uses: imjasonh/setup-crane@v0.4
+
+      - name: Flatten images
+        id: flatten_images
+        run: |
+          set -ex
+          DIGEST=""
+          while read -r IMG; do
+            export OUT=$(crane flatten "$IMG")
+            DIGEST=$(echo "$OUT" | awk 'END{print}' | cut -d'@' -f2)
+          done <<< $(echo $DOCKER_METADATA_OUTPUT_JSON | jq -r '.tags[]')
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
