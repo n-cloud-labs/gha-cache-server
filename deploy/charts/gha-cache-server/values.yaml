@@ -128,7 +128,6 @@ migrationJob:
   ttlSecondsAfterFinished: 300
   command: []
   args:
-    - gha-cache-server
     - --migrate-only
   extraEnv: []
   extraEnvFrom: []
