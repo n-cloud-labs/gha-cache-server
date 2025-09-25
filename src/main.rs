@@ -9,13 +9,16 @@ mod storage;
 
 use axum::Router;
 use clap::Parser;
-use sqlx::{AnyPool, any::AnyPoolOptions, migrate::Migrator};
+use sqlx::{
+    AnyPool,
+    any::{AnyPoolOptions, install_default_drivers},
+    migrate::Migrator,
+};
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 
-use anyhow::Context;
-
 use crate::http::build_router;
+use anyhow::Context;
 use config::{BlobStoreSelector, Config, DatabaseDriver};
 use storage::{BlobStore, fs::FsStore, gcs::GcsStore, s3::S3Store};
 
@@ -35,6 +38,8 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     obs::init_tracing();
     let cfg = Config::from_env()?;
+
+    install_default_drivers();
 
     // DB
     let pool = AnyPoolOptions::new()
