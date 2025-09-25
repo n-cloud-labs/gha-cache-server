@@ -3,9 +3,9 @@ entries:
   gha-cache-server:
   - apiVersion: v2
     appVersion: 1.0.0
-    created: "2025-09-25T20:05:07.946190942Z"
+    created: "2025-09-25T20:29:04.169177802Z"
     description: A Helm chart for deploying the GitHub Actions cache compatible server
-    digest: 7abf5f75eb9ac7713342bd00dd581f7dbff0106c91a3aff5994081902de3cb0e
+    digest: 0ff250cfd2428295976a4ff27c0e97dd5e58c20c1e23203e8d83ebe0c95af612
     keywords:
     - github
     - actions
@@ -22,4 +22,4 @@ entries:
     urls:
     - https://n-cloud-labs.github.io/gha-cache-server/gha-cache-server-1.0.0.tgz
     version: 1.0.0
-generated: "2025-09-25T20:05:07.945419318Z"
+generated: "2025-09-25T20:29:04.168472175Z"
