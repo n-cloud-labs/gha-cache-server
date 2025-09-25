@@ -39,6 +39,9 @@ async fn main() -> anyhow::Result<()> {
     obs::init_tracing();
     let cfg = Config::from_env()?;
 
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .map_err(|e| anyhow::format_err!("{:#?}", e))?;
     install_default_drivers();
 
     // DB
