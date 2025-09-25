@@ -12,8 +12,7 @@ RUN apt-get update \
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir src \
     && echo "fn main() {}" > src/main.rs \
-    && cargo build --release --locked \
-    && rm -rf target/release
+    && cargo build --release --locked
 
 # Copy the full source tree and build the release binary
 COPY . .
