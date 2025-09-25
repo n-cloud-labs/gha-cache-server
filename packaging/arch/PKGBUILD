@@ -35,7 +35,7 @@ prepare() {
   export CARGO_HOME="${srcdir}/cargo"
   cd "${srcdir}/${pkgname}-${pkgver}"
   sed -i 's/"sqlite"/"sqlite-unbundled"/' Cargo.toml
-  cargo fetch --locked
+  cargo fetch
 }
 
 build() {
