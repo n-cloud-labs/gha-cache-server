@@ -6,13 +6,7 @@ arch=('x86_64' 'aarch64')
 url="https://github.com/n-cloud-labs/gha-cache-server"
 license=('MIT')
 depends=('gcc-libs' 'glibc' 'systemd')
-optdepends=(
-  'postgresql: metadata database backend via DATABASE_URL'
-  'mariadb-clients: MySQL-compatible metadata backend via DATABASE_URL'
-  'sqlite: embedded metadata backend via DATABASE_URL'
-  'minio: S3-compatible object storage backend for the cache blob store'
-)
-makedepends=('cargo' 'pkgconf')
+makedepends=('cargo' 'clang' 'pkgconf')
 source=("https://github.com/n-cloud-labs/gha-cache-server/archive/refs/tags/v${pkgver}.tar.gz"
         "gha-cache-server.service"
         "gha-cache-server.sysusers"
@@ -22,6 +16,7 @@ sha256sums=('SKIP'
             'SKIP'
             'SKIP')
 backup=('etc/gha-cache-server/env')
+options=(!lto)
 
 # Runtime configuration summary:
 #   DATABASE_URL (required) selects the metadata database (PostgreSQL, MySQL or SQLite).

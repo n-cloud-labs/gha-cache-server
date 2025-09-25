@@ -14,6 +14,7 @@ default-run = "gha-cache-server"
 anyhow = { version = "1" }
 async-trait = { version = "0.1" }
 aws-config = { version = "1" }
+aws-lc-rs = { version = "=1.14.0" }
 aws-sdk-s3 = { version = "1" }
 aws-smithy-types = { version = "1" }
 axum = { version = "0.8", features = ["macros"] }
