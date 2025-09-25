@@ -308,6 +308,20 @@ jobs:
             type=registry,ref=ghcr.io/${{ github.repository }}:buildkit
             type=registry,ref=ghcr.io/${{ github.repository }}:buildkit-arm
 
+      - name: Setup CRANE
+        uses: imjasonh/setup-crane@v0.4
+
+      - name: Flatten images
+        id: flatten_images
+        run: |
+          set -ex
+          DIGEST=""
+          while read -r IMG; do
+            export OUT=$(crane flatten "$IMG")
+            DIGEST=$(echo "$OUT" | awk 'END{print}' | cut -d'@' -f2)
+          done <<< $(echo $DOCKER_METADATA_OUTPUT_JSON | jq -r '.tags[]')
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
         with:
@@ -317,13 +331,14 @@ jobs:
         env:
           COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          DIGEST: ${{ steps.flatten_images.outputs.digest }}
         run: |
           set -euo pipefail
           printf '%s' "${COSIGN_KEY}" > cosign.key
           chmod 600 cosign.key
           printf '%s\n' "${{ steps.meta.outputs.tags }}" | while read -r tag; do
             [[ -n "$tag" ]] || continue
-            cosign sign --key cosign.key "$tag"
+            cosign sign --key cosign.key "$tag@${DIGEST}"
           done
 
   build-helm:

@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.18
 
-FROM rust:1.90 AS builder
+FROM rust:1.90-trixie AS builder
 LABEL org.opencontainers.image.source="https://github.com/n-cloud-labs/gha-cache-server"
 WORKDIR /usr/src/gha-cache-server
 
@@ -22,7 +22,7 @@ RUN mkdir -p /out/usr/local/bin /out/srv/gha-cache-server \
     && cp target/release/gha-cache-server /out/usr/local/bin/gha-cache-server \
     && cp -r migrations /out/srv/gha-cache-server/
 
-FROM bitnami/minideb:bookworm AS runtime
+FROM bitnami/minideb:trixie AS runtime
 LABEL org.opencontainers.image.source="https://github.com/n-cloud-labs/gha-cache-server"
 WORKDIR /srv/gha-cache-server
 
