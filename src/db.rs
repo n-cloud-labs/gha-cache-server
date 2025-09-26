@@ -84,11 +84,12 @@ impl VisitorMut for PlaceholderRewriter {
 
     fn pre_visit_expr(&mut self, expr: &mut Expr) -> ControlFlow<Self::Break> {
         if let Expr::Value(Value::Placeholder(placeholder)) = expr
-            && placeholder.starts_with('?') {
-                *placeholder = format!("${}", self.next_index);
-                self.next_index += 1;
-                self.replaced = true;
-            }
+            && placeholder.starts_with('?')
+        {
+            *placeholder = format!("${}", self.next_index);
+            self.next_index += 1;
+            self.replaced = true;
+        }
 
         ControlFlow::Continue(())
     }
