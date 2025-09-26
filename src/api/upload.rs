@@ -11,6 +11,7 @@ use sqlx::Row;
 use std::{io, time::Duration};
 use uuid::Uuid;
 
+use crate::db::rewrite_placeholders;
 use crate::http::AppState;
 use crate::meta;
 use crate::{
@@ -130,12 +131,11 @@ pub async fn list_caches(
 ) -> Result<Json<ListCachesResponse>> {
     let key = extract_list_key(query.key)?;
 
-    let rows = sqlx::query(
+    let query = rewrite_placeholders(
         "SELECT id, scope, cache_key, size_bytes, storage_key, created_at, last_access_at FROM cache_entries WHERE cache_key = ? ORDER BY created_at DESC",
-    )
-    .bind(&key)
-    .fetch_all(&st.pool)
-    .await?;
+        st.database_driver,
+    );
+    let rows = sqlx::query(&query).bind(&key).fetch_all(&st.pool).await?;
 
     let mut entries = Vec::with_capacity(rows.len());
     for row in rows {
@@ -165,19 +165,21 @@ pub async fn get_cache_entry(
     let keys = q.get("keys").cloned().unwrap_or_default();
     // let version = q.get("version").cloned().unwrap_or_default();
     // Simplified lookup: pick first matching entry (TODO: add restore-keys precedence)
-    let rec = sqlx::query(
+    let query = rewrite_placeholders(
         "SELECT id, storage_key, created_at FROM cache_entries WHERE cache_key = ? ORDER BY created_at DESC LIMIT 1",
-    )
-    .bind(keys.split(',').next().unwrap_or(""))
-    .fetch_optional(&st.pool)
-    .await?;
+        st.database_driver,
+    );
+    let rec = sqlx::query(&query)
+        .bind(keys.split(',').next().unwrap_or(""))
+        .fetch_optional(&st.pool)
+        .await?;
 
     if let Some(row) = rec {
         let id = parse_uuid(row.try_get::<String, _>("id")?)?;
         let created_at = timestamp_to_datetime(row.try_get::<i64, _>("created_at")?)?;
         // Return 200 with archiveLocation (direct presigned URL); scope kept generic
         let storage_key: String = row.try_get("storage_key")?;
-        meta::touch_entry(&st.pool, id).await?;
+        meta::touch_entry(&st.pool, st.database_driver, id).await?;
         let url = st
             .store
             .presign_get(&storage_key, std::time::Duration::from_secs(3600))
@@ -209,13 +211,29 @@ pub async fn reserve_cache(
         general_purpose::STANDARD.encode(key),
         Uuid::new_v4()
     );
-    let entry = meta::create_entry(&st.pool, "_", "_", key, version, &storage_key).await?;
+    let entry = meta::create_entry(
+        &st.pool,
+        st.database_driver,
+        "_",
+        "_",
+        key,
+        version,
+        &storage_key,
+    )
+    .await?;
     let upload_id = st
         .store
         .create_multipart(&storage_key)
         .await
         .map_err(|e| ApiError::S3(format!("{e}")))?;
-    let _ = meta::upsert_upload(&st.pool, entry.id, &upload_id, "reserved").await?;
+    let _ = meta::upsert_upload(
+        &st.pool,
+        st.database_driver,
+        entry.id,
+        &upload_id,
+        "reserved",
+    )
+    .await?;
 
     Ok(Json(serde_json::json!({ "cacheId": entry.id })))
 }
@@ -227,17 +245,21 @@ pub async fn upload_chunk(
     body: axum::body::Body,
 ) -> Result<StatusCode> {
     let uuid = Uuid::parse_str(&id).map_err(|_| ApiError::BadRequest("invalid cacheId".into()))?;
-    let rec = sqlx::query(
+    let query = rewrite_placeholders(
         "SELECT upload_id, storage_key FROM cache_uploads u JOIN cache_entries e ON e.id = u.entry_id WHERE e.id = ?",
-    )
-    .bind(uuid.to_string())
-    .fetch_one(&st.pool)
-    .await?;
+        st.database_driver,
+    );
+    let rec = sqlx::query(&query)
+        .bind(uuid.to_string())
+        .fetch_one(&st.pool)
+        .await?;
     let upload_id: String = rec.try_get("upload_id")?;
     let storage_key: String = rec.try_get("storage_key")?;
 
     // We don't actually need offsets here because we map each PATCH to an S3 part in order.
-    let next_part = 1 + meta::get_parts(&st.pool, &upload_id).await?.len() as i32;
+    let next_part = 1 + meta::get_parts(&st.pool, st.database_driver, &upload_id)
+        .await?
+        .len() as i32;
 
     let bs = body_to_blob_payload(body);
     let etag = st
@@ -245,7 +267,7 @@ pub async fn upload_chunk(
         .upload_part(&storage_key, &upload_id, next_part, bs)
         .await
         .map_err(|e| ApiError::S3(format!("{e}")))?;
-    meta::add_part(&st.pool, &upload_id, next_part, &etag).await?;
+    meta::add_part(&st.pool, st.database_driver, &upload_id, next_part, &etag).await?;
 
     Ok(StatusCode::OK)
 }
@@ -261,15 +283,17 @@ pub async fn commit_cache(
     Json(req): Json<serde_json::Value>,
 ) -> Result<StatusCode> {
     let uuid = Uuid::parse_str(&id).map_err(|_| ApiError::BadRequest("invalid cacheId".into()))?;
-    let rec = sqlx::query(
+    let query = rewrite_placeholders(
         "SELECT upload_id, storage_key FROM cache_uploads u JOIN cache_entries e ON e.id = u.entry_id WHERE e.id = ?",
-    )
-    .bind(uuid.to_string())
-    .fetch_one(&st.pool)
-    .await?;
+        st.database_driver,
+    );
+    let rec = sqlx::query(&query)
+        .bind(uuid.to_string())
+        .fetch_one(&st.pool)
+        .await?;
     let upload_id: String = rec.try_get("upload_id")?;
     let storage_key: String = rec.try_get("storage_key")?;
-    let parts = meta::get_parts(&st.pool, &upload_id).await?;
+    let parts = meta::get_parts(&st.pool, st.database_driver, &upload_id).await?;
     st.store
         .complete_multipart(&storage_key, &upload_id, parts)
         .await
@@ -277,7 +301,11 @@ pub async fn commit_cache(
 
     // Persist size if provided
     if let Some(size) = req.get("size").and_then(|v| v.as_i64()) {
-        sqlx::query("UPDATE cache_entries SET size_bytes = ? WHERE id = ?")
+        let update_query = rewrite_placeholders(
+            "UPDATE cache_entries SET size_bytes = ? WHERE id = ?",
+            st.database_driver,
+        );
+        sqlx::query(&update_query)
             .bind(size)
             .bind(uuid.to_string())
             .execute(&st.pool)

@@ -6,6 +6,7 @@ use sqlx::Row;
 use std::time::Duration;
 use uuid::Uuid;
 
+use crate::db::rewrite_placeholders;
 use crate::error::{ApiError, Result};
 use crate::http::AppState;
 use crate::meta;
@@ -21,13 +22,17 @@ pub async fn download_proxy(
     }
     let entry_id =
         Uuid::parse_str(&random).map_err(|_| ApiError::BadRequest("invalid cache id".into()))?;
-    let rec = sqlx::query("SELECT storage_key FROM cache_entries WHERE id = ?")
+    let query = rewrite_placeholders(
+        "SELECT storage_key FROM cache_entries WHERE id = ?",
+        st.database_driver,
+    );
+    let rec = sqlx::query(&query)
         .bind(entry_id.to_string())
         .fetch_optional(&st.pool)
         .await?;
     let row = rec.ok_or(ApiError::NotFound)?;
     let storage_key: String = row.try_get("storage_key")?;
-    meta::touch_entry(&st.pool, entry_id).await?;
+    meta::touch_entry(&st.pool, st.database_driver, entry_id).await?;
     let pres = st
         .store
         .presign_get(&storage_key, Duration::from_secs(3600))

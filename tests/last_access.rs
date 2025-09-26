@@ -11,6 +11,7 @@ use axum::{
 use gha_cache_server::api::proxy::ProxyHttpClient;
 use gha_cache_server::api::types::TwirpGetUrlReq;
 use gha_cache_server::api::{download, twirp, upload};
+use gha_cache_server::config::DatabaseDriver;
 use gha_cache_server::http::AppState;
 use gha_cache_server::meta::{self, CacheEntry};
 use gha_cache_server::storage::{BlobStore, PresignedUrl};
@@ -100,9 +101,17 @@ async fn setup_pool() -> AnyPool {
 }
 
 async fn create_entry(pool: &AnyPool) -> CacheEntry {
-    meta::create_entry(pool, "org", "repo", "cache-key", "scope", "storage-key")
-        .await
-        .expect("create entry")
+    meta::create_entry(
+        pool,
+        DatabaseDriver::Sqlite,
+        "org",
+        "repo",
+        "cache-key",
+        "scope",
+        "storage-key",
+    )
+    .await
+    .expect("create entry")
 }
 
 async fn set_last_access(pool: &AnyPool, id: Uuid, value: i64) {
@@ -128,6 +137,7 @@ fn build_state(pool: AnyPool) -> AppState {
         store: Arc::new(TestStore::new("https://example.com/archive.tgz")),
         enable_direct: true,
         proxy_client: Arc::new(DummyProxyClient),
+        database_driver: DatabaseDriver::Sqlite,
     }
 }
 
@@ -137,7 +147,7 @@ async fn touch_entry_updates_last_access() {
     let entry = create_entry(&pool).await;
     set_last_access(&pool, entry.id, 0).await;
 
-    meta::touch_entry(&pool, entry.id)
+    meta::touch_entry(&pool, DatabaseDriver::Sqlite, entry.id)
         .await
         .expect("touch entry");
 

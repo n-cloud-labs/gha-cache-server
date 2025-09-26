@@ -14,7 +14,7 @@ use tower::{
 };
 
 use crate::api::{download, proxy, twirp, upload, upload_compat};
-use crate::config::Config;
+use crate::config::{Config, DatabaseDriver};
 use crate::storage::BlobStore;
 
 #[derive(Clone)]
@@ -23,6 +23,7 @@ pub struct AppState {
     pub store: Arc<dyn BlobStore>,
     pub enable_direct: bool,
     pub proxy_client: Arc<dyn proxy::ProxyHttpClient>,
+    pub database_driver: DatabaseDriver,
 }
 
 pub fn build_router(pool: AnyPool, store: Arc<dyn BlobStore>, cfg: &Config) -> Router {
@@ -42,6 +43,7 @@ pub(crate) fn build_router_with_proxy(
         store,
         enable_direct: cfg.enable_direct_downloads,
         proxy_client,
+        database_driver: cfg.database_driver,
     };
 
     Router::new()

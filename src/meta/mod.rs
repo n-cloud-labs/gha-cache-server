@@ -6,6 +6,9 @@ use std::io;
 use std::time::Duration;
 use uuid::Uuid;
 
+use crate::config::DatabaseDriver;
+use crate::db::rewrite_placeholders;
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CacheEntry {
     pub id: Uuid,
@@ -98,39 +101,61 @@ fn format_parts(parts: &[UploadPart]) -> Result<String, sqlx::Error> {
     serde_json::to_string(parts).map_err(|err| sqlx::Error::Decode(Box::new(err)))
 }
 
-async fn fetch_parts(pool: &AnyPool, upload_id: &str) -> Result<Vec<UploadPart>, sqlx::Error> {
-    let row = sqlx::query("SELECT parts_json FROM cache_uploads WHERE upload_id = ?")
-        .bind(upload_id)
-        .fetch_one(pool)
-        .await?;
+async fn fetch_parts(
+    pool: &AnyPool,
+    driver: DatabaseDriver,
+    upload_id: &str,
+) -> Result<Vec<UploadPart>, sqlx::Error> {
+    let query = rewrite_placeholders(
+        "SELECT parts_json FROM cache_uploads WHERE upload_id = ?",
+        driver,
+    );
+    let row = sqlx::query(&query).bind(upload_id).fetch_one(pool).await?;
     let raw: Option<String> = row.try_get("parts_json")?;
     let serialized = raw.unwrap_or_else(|| "[]".to_string());
     parse_parts(&serialized)
 }
 
-async fn fetch_upload(pool: &AnyPool, upload_id: &str) -> Result<UploadRow, sqlx::Error> {
-    let row = sqlx::query(
+async fn fetch_upload(
+    pool: &AnyPool,
+    driver: DatabaseDriver,
+    upload_id: &str,
+) -> Result<UploadRow, sqlx::Error> {
+    let query = rewrite_placeholders(
         "SELECT id, entry_id, upload_id, parts_json, state FROM cache_uploads WHERE upload_id = ?",
-    )
-    .bind(upload_id)
-    .fetch_one(pool)
-    .await?;
+        driver,
+    );
+    let row = sqlx::query(&query).bind(upload_id).fetch_one(pool).await?;
     map_upload_row(row)
 }
 
-async fn fetch_entry(pool: &AnyPool, id: Uuid) -> Result<CacheEntry, sqlx::Error> {
-    let row = sqlx::query(
+async fn fetch_entry(
+    pool: &AnyPool,
+    driver: DatabaseDriver,
+    id: Uuid,
+) -> Result<CacheEntry, sqlx::Error> {
+    let query = rewrite_placeholders(
         "SELECT id, org, repo, cache_key, scope, size_bytes, checksum, storage_key, created_at, last_access_at, ttl_seconds FROM cache_entries WHERE id = ?",
-    )
-    .bind(id.to_string())
-    .fetch_one(pool)
-    .await?;
+        driver,
+    );
+    let row = sqlx::query(&query)
+        .bind(id.to_string())
+        .fetch_one(pool)
+        .await?;
     map_cache_entry(row)
 }
 
-pub async fn touch_entry(pool: &AnyPool, id: Uuid) -> Result<(), sqlx::Error> {
+pub async fn touch_entry(
+    pool: &AnyPool,
+    driver: DatabaseDriver,
+    id: Uuid,
+) -> Result<(), sqlx::Error> {
     let now = Utc::now().timestamp();
-    sqlx::query("UPDATE cache_entries SET last_access_at = ? WHERE id = ?")
+    let query = rewrite_placeholders(
+        "UPDATE cache_entries SET last_access_at = ? WHERE id = ?",
+        driver,
+    );
+    sqlx::query(&query)
         .bind(now)
         .bind(id.to_string())
         .execute(pool)
@@ -139,8 +164,13 @@ pub async fn touch_entry(pool: &AnyPool, id: Uuid) -> Result<(), sqlx::Error> {
 }
 
 #[allow(dead_code)]
-pub async fn delete_entry(pool: &AnyPool, id: Uuid) -> Result<(), sqlx::Error> {
-    sqlx::query("DELETE FROM cache_entries WHERE id = ?")
+pub async fn delete_entry(
+    pool: &AnyPool,
+    driver: DatabaseDriver,
+    id: Uuid,
+) -> Result<(), sqlx::Error> {
+    let query = rewrite_placeholders("DELETE FROM cache_entries WHERE id = ?", driver);
+    sqlx::query(&query)
         .bind(id.to_string())
         .execute(pool)
         .await?;
@@ -150,6 +180,7 @@ pub async fn delete_entry(pool: &AnyPool, id: Uuid) -> Result<(), sqlx::Error> {
 #[allow(dead_code)]
 pub async fn expired_entries(
     pool: &AnyPool,
+    driver: DatabaseDriver,
     now: DateTime<Utc>,
     max_entry_age: Option<Duration>,
 ) -> Result<Vec<CacheEntry>, sqlx::Error> {
@@ -157,23 +188,24 @@ pub async fn expired_entries(
 
     let rows = if let Some(limit) = max_entry_age {
         let secs = i64::try_from(limit.as_secs()).unwrap_or(i64::MAX);
-        sqlx::query(
+        let query = rewrite_placeholders(
             "SELECT id, org, repo, cache_key, scope, size_bytes, checksum, storage_key, created_at, last_access_at, ttl_seconds \
 FROM cache_entries WHERE last_access_at + CASE WHEN ttl_seconds > ? THEN ? ELSE ttl_seconds END < ? ORDER BY last_access_at ASC",
-        )
-        .bind(secs)
-        .bind(secs)
-        .bind(ts)
-        .fetch_all(pool)
-        .await?
+            driver,
+        );
+        sqlx::query(&query)
+            .bind(secs)
+            .bind(secs)
+            .bind(ts)
+            .fetch_all(pool)
+            .await?
     } else {
-        sqlx::query(
+        let query = rewrite_placeholders(
             "SELECT id, org, repo, cache_key, scope, size_bytes, checksum, storage_key, created_at, last_access_at, ttl_seconds \
 FROM cache_entries WHERE last_access_at + ttl_seconds < ? ORDER BY last_access_at ASC",
-        )
-        .bind(ts)
-        .fetch_all(pool)
-        .await?
+            driver,
+        );
+        sqlx::query(&query).bind(ts).fetch_all(pool).await?
     };
 
     rows.into_iter().map(map_cache_entry).collect()
@@ -182,41 +214,43 @@ FROM cache_entries WHERE last_access_at + ttl_seconds < ? ORDER BY last_access_a
 #[allow(dead_code)]
 pub async fn expired_entry_ids(
     pool: &AnyPool,
+    driver: DatabaseDriver,
     now: DateTime<Utc>,
 ) -> Result<Vec<Uuid>, sqlx::Error> {
-    let entries = expired_entries(pool, now, None).await?;
+    let entries = expired_entries(pool, driver, now, None).await?;
     Ok(entries.into_iter().map(|entry| entry.id).collect())
 }
 
 #[allow(dead_code)]
-pub async fn total_occupancy(pool: &AnyPool) -> Result<i64, sqlx::Error> {
-    let total =
-        sqlx::query_scalar::<_, i64>("SELECT COALESCE(SUM(size_bytes), 0) FROM cache_entries")
-            .fetch_one(pool)
-            .await?;
+pub async fn total_occupancy(pool: &AnyPool, driver: DatabaseDriver) -> Result<i64, sqlx::Error> {
+    let query = rewrite_placeholders(
+        "SELECT COALESCE(SUM(size_bytes), 0) FROM cache_entries",
+        driver,
+    );
+    let total = sqlx::query_scalar::<_, i64>(&query).fetch_one(pool).await?;
     Ok(total)
 }
 
 #[allow(dead_code)]
 pub async fn list_entries_ordered(
     pool: &AnyPool,
+    driver: DatabaseDriver,
     limit: Option<i64>,
 ) -> Result<Vec<CacheEntry>, sqlx::Error> {
     if let Some(limit) = limit {
-        let rows = sqlx::query(
+        let query = rewrite_placeholders(
             "SELECT id, org, repo, cache_key, scope, size_bytes, checksum, storage_key, created_at, last_access_at, ttl_seconds FROM cache_entries ORDER BY last_access_at ASC LIMIT ?",
-        )
-        .bind(limit)
-        .fetch_all(pool)
-        .await?;
+            driver,
+        );
+        let rows = sqlx::query(&query).bind(limit).fetch_all(pool).await?;
 
         rows.into_iter().map(map_cache_entry).collect()
     } else {
-        let rows = sqlx::query(
+        let query = rewrite_placeholders(
             "SELECT id, org, repo, cache_key, scope, size_bytes, checksum, storage_key, created_at, last_access_at, ttl_seconds FROM cache_entries ORDER BY last_access_at ASC",
-        )
-        .fetch_all(pool)
-        .await?;
+            driver,
+        );
+        let rows = sqlx::query(&query).fetch_all(pool).await?;
 
         rows.into_iter().map(map_cache_entry).collect()
     }
@@ -224,6 +258,7 @@ pub async fn list_entries_ordered(
 
 pub async fn create_entry(
     pool: &AnyPool,
+    driver: DatabaseDriver,
     org: &str,
     repo: &str,
     key: &str,
@@ -231,23 +266,26 @@ pub async fn create_entry(
     storage_key: &str,
 ) -> Result<CacheEntry, sqlx::Error> {
     let id = Uuid::new_v4();
-    sqlx::query(
+    let query = rewrite_placeholders(
         "INSERT INTO cache_entries (id, org, repo, cache_key, scope, storage_key) VALUES (?, ?, ?, ?, ?, ?)",
-    )
-    .bind(id.to_string())
-    .bind(org)
-    .bind(repo)
-    .bind(key)
-    .bind(scope)
-    .bind(storage_key)
-    .execute(pool)
-    .await?;
+        driver,
+    );
+    sqlx::query(&query)
+        .bind(id.to_string())
+        .bind(org)
+        .bind(repo)
+        .bind(key)
+        .bind(scope)
+        .bind(storage_key)
+        .execute(pool)
+        .await?;
 
-    fetch_entry(pool, id).await
+    fetch_entry(pool, driver, id).await
 }
 
 pub async fn upsert_upload(
     pool: &AnyPool,
+    driver: DatabaseDriver,
     entry_id: Uuid,
     upload_id: &str,
     state: &str,
@@ -255,30 +293,34 @@ pub async fn upsert_upload(
     let id = Uuid::new_v4();
     let entry = entry_id.to_string();
 
-    let insert = sqlx::query(
+    let insert_query = rewrite_placeholders(
         "INSERT INTO cache_uploads (id, entry_id, upload_id, parts_json, state) VALUES (?, ?, ?, ?, ?)",
-    )
-    .bind(id.to_string())
-    .bind(entry.clone())
-    .bind(upload_id)
-    .bind("[]")
-    .bind(state)
-    .execute(pool)
-    .await;
+        driver,
+    );
+    let insert = sqlx::query(&insert_query)
+        .bind(id.to_string())
+        .bind(entry.clone())
+        .bind(upload_id)
+        .bind("[]")
+        .bind(state)
+        .execute(pool)
+        .await;
 
     if let Err(err) = insert {
         if let sqlx::Error::Database(db_err) = &err {
             if db_err.is_unique_violation() {
                 let now = Utc::now().timestamp();
-                sqlx::query(
+                let update_query = rewrite_placeholders(
                     "UPDATE cache_uploads SET entry_id = ?, state = ?, updated_at = ? WHERE upload_id = ?",
-                )
-                .bind(entry)
-                .bind(state)
-                .bind(now)
-                .bind(upload_id)
-                .execute(pool)
-                .await?;
+                    driver,
+                );
+                sqlx::query(&update_query)
+                    .bind(entry)
+                    .bind(state)
+                    .bind(now)
+                    .bind(upload_id)
+                    .execute(pool)
+                    .await?;
             } else {
                 return Err(err);
             }
@@ -287,16 +329,17 @@ pub async fn upsert_upload(
         }
     }
 
-    fetch_upload(pool, upload_id).await
+    fetch_upload(pool, driver, upload_id).await
 }
 
 pub async fn add_part(
     pool: &AnyPool,
+    driver: DatabaseDriver,
     upload_id: &str,
     part_number: i32,
     etag: &str,
 ) -> Result<(), sqlx::Error> {
-    let mut parts = fetch_parts(pool, upload_id).await?;
+    let mut parts = fetch_parts(pool, driver, upload_id).await?;
     parts.push(UploadPart {
         part_number,
         etag: etag.to_string(),
@@ -304,7 +347,11 @@ pub async fn add_part(
     let serialized = format_parts(&parts)?;
     let now = Utc::now().timestamp();
 
-    sqlx::query("UPDATE cache_uploads SET parts_json = ?, updated_at = ? WHERE upload_id = ?")
+    let query = rewrite_placeholders(
+        "UPDATE cache_uploads SET parts_json = ?, updated_at = ? WHERE upload_id = ?",
+        driver,
+    );
+    sqlx::query(&query)
         .bind(serialized)
         .bind(now)
         .bind(upload_id)
@@ -313,7 +360,11 @@ pub async fn add_part(
     Ok(())
 }
 
-pub async fn get_parts(pool: &AnyPool, upload_id: &str) -> Result<Vec<(i32, String)>, sqlx::Error> {
-    let parts = fetch_parts(pool, upload_id).await?;
+pub async fn get_parts(
+    pool: &AnyPool,
+    driver: DatabaseDriver,
+    upload_id: &str,
+) -> Result<Vec<(i32, String)>, sqlx::Error> {
+    let parts = fetch_parts(pool, driver, upload_id).await?;
     Ok(parts.into_iter().map(|p| (p.part_number, p.etag)).collect())
 }
