@@ -3,7 +3,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use axum::extract::{Path, Query, State};
+use axum::{
+    extract::{Path, Query, State},
+    response::IntoResponse,
+};
 use bytes::Bytes;
 use futures::stream;
 use gha_cache_server::api::proto::cache;
@@ -187,7 +190,7 @@ async fn get_cache_entry_updates_last_access() {
     let entry = create_entry(&pool).await;
     set_last_access(&pool, entry.id, 1).await;
 
-    let state = build_state(pool.clone(), TestStore::new(TEST_URL), true);
+    let state = build_state(pool.clone(), TestStore::without_presign(TEST_URL), false);
     let mut query_params = HashMap::new();
     query_params.insert("keys".to_string(), entry.key.clone());
     query_params.insert("version".to_string(), entry.version.clone());
@@ -206,7 +209,7 @@ async fn twirp_download_url_updates_last_access() {
     let entry = create_entry(&pool).await;
     set_last_access(&pool, entry.id, 2).await;
 
-    let state = build_state(pool.clone(), TestStore::new(TEST_URL), true);
+    let state = build_state(pool.clone(), TestStore::without_presign(TEST_URL), false);
     let request = TwirpGetUrlReq {
         metadata: None,
         key: entry.key.clone(),
@@ -216,9 +219,24 @@ async fn twirp_download_url_updates_last_access() {
 
     let request = TwirpRequest::<_, cache::GetCacheEntryDownloadUrlRequest>::from_json(request);
 
-    let _ = twirp::get_cache_entry_download_url(State(state), request)
+    let response = twirp::get_cache_entry_download_url(State(state), request)
         .await
         .expect("twirp cache hit");
+
+    let http_response = response.into_response();
+    assert_eq!(http_response.status(), http::StatusCode::OK);
+    let body = BodyExt::collect(http_response.into_body())
+        .await
+        .expect("collect twirp body")
+        .to_bytes();
+    let payload: serde_json::Value = serde_json::from_slice(&body).expect("parse twirp body");
+    assert_eq!(payload["ok"].as_bool(), Some(true));
+    assert_eq!(payload["matched_key"].as_str(), Some(entry.key.as_str()));
+    let expected_url = format!("http://localhost/download/{}/{}.tgz", entry.key, entry.id);
+    assert_eq!(
+        payload["signed_download_url"].as_str(),
+        Some(expected_url.as_str())
+    );
 
     let updated = fetch_last_access(&pool, entry.id).await;
     assert!(updated > 2);
@@ -233,7 +251,7 @@ async fn download_proxy_updates_last_access() {
     let state = build_state(pool.clone(), TestStore::new(TEST_URL), true);
     let response = download::download_proxy(
         State(state),
-        Path((entry.id.to_string(), "cache.tgz".to_string())),
+        Path((entry.key.clone(), format!("{}.tgz", entry.id))),
     )
     .await
     .expect("download redirect");
@@ -258,7 +276,7 @@ async fn download_proxy_streams_when_direct_disabled() {
     let state = build_state(pool.clone(), TestStore::without_presign(TEST_URL), false);
     let response = download::download_proxy(
         State(state),
-        Path((entry.id.to_string(), "cache.tgz".to_string())),
+        Path((entry.key.clone(), format!("{}.tgz", entry.id))),
     )
     .await
     .expect("streaming download");

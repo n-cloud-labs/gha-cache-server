@@ -4,7 +4,7 @@ use std::time::Duration;
 use axum::{
     Json,
     extract::{FromRequest, Request, State},
-    http::{HeaderValue, header},
+    http::{HeaderValue, header, request::Parts},
     response::{IntoResponse, Response},
 };
 use base64::Engine;
@@ -27,8 +27,57 @@ fn build_upload_url(id: Uuid) -> String {
     format!("/upload/{id}")
 }
 
-fn build_download_url(id: Uuid) -> String {
-    format!("/download/{id}/cache.tgz")
+#[derive(Clone, Debug)]
+struct RequestOrigin {
+    scheme: String,
+    authority: String,
+}
+
+impl RequestOrigin {
+    fn absolute(&self, path: &str) -> String {
+        format!("{}://{}{}", self.scheme, self.authority, path)
+    }
+
+    fn from_parts(parts: &Parts) -> Result<Self> {
+        let scheme = parts
+            .uri
+            .scheme_str()
+            .map(str::to_owned)
+            .or_else(|| {
+                parts
+                    .headers
+                    .get("x-forwarded-proto")
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|raw| raw.split(',').next().map(|item| item.trim().to_owned()))
+            })
+            .unwrap_or_else(|| "http".to_string());
+        let authority = parts
+            .uri
+            .authority()
+            .map(|value| value.to_string())
+            .or_else(|| {
+                parts
+                    .headers
+                    .get(header::HOST)
+                    .and_then(|value| value.to_str().ok())
+                    .map(|value| value.to_string())
+            })
+            .ok_or_else(|| ApiError::BadRequest("missing Host header".into()))?;
+        Ok(Self { scheme, authority })
+    }
+}
+
+impl Default for RequestOrigin {
+    fn default() -> Self {
+        Self {
+            scheme: "http".into(),
+            authority: "localhost".into(),
+        }
+    }
+}
+
+fn build_download_url(origin: &RequestOrigin, cache_key: &str, id: Uuid) -> String {
+    origin.absolute(&format!("/download/{cache_key}/{id}.tgz"))
 }
 
 fn unique_keys(primary: String, restores: &[String]) -> Vec<String> {
@@ -51,12 +100,13 @@ enum TwirpFormat {
 pub struct TwirpRequest<T, P> {
     data: T,
     format: TwirpFormat,
+    origin: RequestOrigin,
     _marker: PhantomData<P>,
 }
 
 impl<T, P> TwirpRequest<T, P> {
-    fn into_parts(self) -> (T, TwirpFormat) {
-        (self.data, self.format)
+    fn into_parts(self) -> (T, TwirpFormat, RequestOrigin) {
+        (self.data, self.format, self.origin)
     }
 
     #[allow(dead_code)]
@@ -64,6 +114,7 @@ impl<T, P> TwirpRequest<T, P> {
         Self {
             data,
             format: TwirpFormat::Json,
+            origin: RequestOrigin::default(),
             _marker: PhantomData,
         }
     }
@@ -121,6 +172,8 @@ where
         let response_format =
             pick_response_format(parts.headers.get(header::ACCEPT), request_format);
 
+        let origin = RequestOrigin::from_parts(&parts)?;
+
         let collected = body
             .collect()
             .await
@@ -141,6 +194,7 @@ where
         Ok(Self {
             data,
             format: response_format,
+            origin,
             _marker: PhantomData,
         })
     }
@@ -190,7 +244,7 @@ pub async fn create_cache_entry(
     State(st): State<AppState>,
     request: TwirpRequest<TwirpCreateReq, cache::CreateCacheEntryRequest>,
 ) -> Result<TwirpResponse<TwirpCreateResp, cache::CreateCacheEntryResponse>> {
-    let (req, format) = request.into_parts();
+    let (req, format, _) = request.into_parts();
     let key = normalize_key(&req.key)?;
     let version = normalize_version(&req.version)?;
     let storage_key = format!(
@@ -237,7 +291,7 @@ pub async fn finalize_cache_entry_upload(
     State(st): State<AppState>,
     request: TwirpRequest<TwirpFinalizeReq, cache::FinalizeCacheEntryUploadRequest>,
 ) -> Result<TwirpResponse<TwirpFinalizeResp, cache::FinalizeCacheEntryUploadResponse>> {
-    let (req, format) = request.into_parts();
+    let (req, format, _) = request.into_parts();
     let key = normalize_key(&req.key)?;
     let version = normalize_version(&req.version)?;
     let Some(entry) =
@@ -281,7 +335,7 @@ pub async fn get_cache_entry_download_url(
     State(st): State<AppState>,
     request: TwirpRequest<TwirpGetUrlReq, cache::GetCacheEntryDownloadUrlRequest>,
 ) -> Result<TwirpResponse<TwirpGetUrlResp, cache::GetCacheEntryDownloadUrlResponse>> {
-    let (req, format) = request.into_parts();
+    let (req, format, origin) = request.into_parts();
     let key = normalize_key(&req.key)?;
     let version = normalize_version(&req.version)?;
     let mut restore_keys = Vec::with_capacity(req.restore_keys.len());
@@ -317,7 +371,7 @@ pub async fn get_cache_entry_download_url(
             return Ok(TwirpResponse::new(
                 TwirpGetUrlResp {
                     ok: true,
-                    signed_download_url: build_download_url(entry.id),
+                    signed_download_url: build_download_url(&origin, &candidate, entry.id),
                     matched_key: candidate,
                 },
                 format,

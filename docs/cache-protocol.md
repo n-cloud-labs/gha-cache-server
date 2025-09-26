@@ -85,7 +85,7 @@ Response on success:
 ```json
 {
   "ok": true,
-  "signed_download_url": "/download/<cache-id>/cache.tgz",
+  "signed_download_url": "https://<host>/download/<cache-key>/<cache-id>.tgz",
   "matched_key": "primary"
 }
 ```
