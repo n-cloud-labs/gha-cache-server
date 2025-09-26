@@ -27,17 +27,24 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: 'true'
+
 jobs:
   build-deb:
     strategy:
       fail-fast: false
       matrix:
         runner:
-          - ubuntu-24.04
-          - ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
+          - { image: ubuntu-24.04, arch: amd64 }
+          - { image: ubuntu-24.04-arm, arch: arm64 }
+    runs-on: ${{ matrix.runner.image }}
     steps:
       - uses: actions/checkout@v5
+
+      - name: Run sccache-cache
+        uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Install build dependencies
         run: |
@@ -54,18 +61,10 @@ jobs:
           rustup default stable
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
-      - name: Cache Debian build inputs
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: debian-${{ matrix.runner }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            debian-${{ matrix.runner }}-
-
       - name: Build Debian package
+        env:
+          DEB_BUILD_OPTIONS: nocheck
+          SCCACHE_GHA_VERSION: '1-${{ matrix.runner.arch }}'
         run: |
           export DEB_BUILD_OPTIONS=nocheck
           dpkg-buildpackage -us -uc -b
@@ -82,6 +81,6 @@ jobs:
       - name: Upload Debian artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: gha-cache-server-${{ matrix.runner }}
+          name: gha-cache-server-${{ matrix.runner.arch }}
           path: artifacts/*
           if-no-files-found: error

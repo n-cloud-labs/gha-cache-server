@@ -5,7 +5,7 @@ LABEL org.opencontainers.image.source="https://github.com/n-cloud-labs/gha-cache
 WORKDIR /usr/src/gha-cache-server
 
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y build-essential cmake pkg-config protobuf-compiler \
+    && apt-get install --no-install-recommends -y build-essential cmake pkg-config protobuf-compiler sccache \
     && rm -rf /var/lib/apt/lists/*
 
 # Create a dummy project to leverage Docker layer caching for dependencies
@@ -30,7 +30,7 @@ RUN install_packages ca-certificates
 
 # Default configuration values. Override them with environment variables at runtime.
 ENV PORT=8080 \
-    RUST_LOG=info,github_actions_cache_rs=info \
+    RUST_LOG="info,github_actions_cache_rs=info" \
     MAX_CONCURRENCY=64 \
     REQUEST_TIMEOUT_SECS=3600 \
     ENABLE_DIRECT_DOWNLOADS=true \

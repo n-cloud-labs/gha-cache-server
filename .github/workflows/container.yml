@@ -118,7 +118,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: |-
+          cache-from: |
             type=registry,ref=ghcr.io/${{ github.repository }}:buildkit
             type=registry,ref=ghcr.io/${{ github.repository }}:buildkit-arm
 
