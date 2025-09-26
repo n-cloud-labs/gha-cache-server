@@ -4,11 +4,12 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use axum::{
-    Json,
     extract::{Path, Query, State},
     response::IntoResponse,
 };
+use gha_cache_server::api::proto::cache;
 use gha_cache_server::api::proxy::ProxyHttpClient;
+use gha_cache_server::api::twirp::TwirpRequest;
 use gha_cache_server::api::types::TwirpGetUrlReq;
 use gha_cache_server::api::{download, twirp, upload};
 use gha_cache_server::config::DatabaseDriver;
@@ -185,12 +186,15 @@ async fn twirp_download_url_updates_last_access() {
 
     let state = build_state(pool.clone());
     let request = TwirpGetUrlReq {
+        metadata: None,
         key: entry.key.clone(),
         restore_keys: Vec::new(),
         version: entry.version.clone(),
     };
 
-    let _ = twirp::get_cache_entry_download_url(State(state), Json(request))
+    let request = TwirpRequest::<_, cache::GetCacheEntryDownloadUrlRequest>::from_json(request);
+
+    let _ = twirp::get_cache_entry_download_url(State(state), request)
         .await
         .expect("twirp cache hit");
 
