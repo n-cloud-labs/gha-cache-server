@@ -1423,6 +1423,7 @@ dependencies = [
  "bytes",
  "chrono",
  "clap",
+ "dotenvy",
  "futures",
  "google-cloud-auth",
  "google-cloud-gax",
@@ -1448,6 +1449,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tower",
+ "tower-http",
  "tracing",
  "tracing-subscriber",
  "url",
@@ -3977,6 +3979,7 @@ dependencies = [
  "tower",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]

@@ -36,6 +36,8 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let _ = dotenvy::dotenv();
+
     let cli = Cli::parse();
     obs::init_tracing();
     let cfg = Config::from_env()?;

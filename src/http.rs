@@ -12,7 +12,7 @@ use tower::{
     limit::ConcurrencyLimitLayer,
     timeout::{TimeoutLayer, error::Elapsed},
 };
-
+use tower_http::trace::TraceLayer;
 use crate::api::{download, proxy, twirp, upload, upload_compat};
 use crate::config::{Config, DatabaseDriver};
 use crate::storage::BlobStore;
@@ -90,6 +90,7 @@ pub(crate) fn build_router_with_proxy(
         .with_state(app_state)
         .layer(
             ServiceBuilder::new()
+                .layer(TraceLayer::new_for_http())
                 .layer(ConcurrencyLimitLayer::new(cfg.max_concurrency))
                 .layer(HandleErrorLayer::new(|error: axum::BoxError| async move {
                     if error.is::<Elapsed>() {

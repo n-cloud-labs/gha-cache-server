@@ -22,6 +22,7 @@ base64 = { version = "0.22" }
 bytes = { version = "1" }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5", features = ["derive"] }
+dotenvy = { version = "0.15" }
 futures = { version = "0.3.31" }
 google-cloud-auth = { version = "1" }
 google-cloud-gax = { version = "1" }
@@ -46,6 +47,7 @@ sync_wrapper = { version = "1" }
 thiserror = { version = "2" }
 tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread", "signal"] }
 tower = { version = "0.5", features = ["timeout", "limit"] }
+tower-http = { version = "0.6", features = ["trace"] }
 tracing = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 url = { version = "2" }
@@ -53,7 +55,6 @@ uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]
 tempfile = { version = "3" }
-
 
 [profile.release]
 lto = true
