@@ -21,6 +21,8 @@ use sqlx::any::AnyPoolOptions;
 use url::Url;
 use uuid::Uuid;
 
+const TEST_VERSION: &str = "v1";
+
 struct TestStore {
     url: Url,
 }
@@ -107,7 +109,8 @@ async fn create_entry(pool: &AnyPool) -> CacheEntry {
         "org",
         "repo",
         "cache-key",
-        "scope",
+        TEST_VERSION,
+        "_",
         "storage-key",
     )
     .await
@@ -164,6 +167,7 @@ async fn get_cache_entry_updates_last_access() {
     let state = build_state(pool.clone());
     let mut query_params = HashMap::new();
     query_params.insert("keys".to_string(), entry.key.clone());
+    query_params.insert("version".to_string(), entry.version.clone());
 
     let _ = upload::get_cache_entry(State(state), Query(query_params))
         .await
@@ -181,7 +185,9 @@ async fn twirp_download_url_updates_last_access() {
 
     let state = build_state(pool.clone());
     let request = TwirpGetUrlReq {
-        cache_id: entry.id.to_string(),
+        key: entry.key.clone(),
+        restore_keys: Vec::new(),
+        version: entry.version.clone(),
     };
 
     let _ = twirp::get_cache_entry_download_url(State(state), Json(request))

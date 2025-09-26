@@ -8,24 +8,31 @@ pub struct TwirpCreateReq {
 }
 #[derive(Serialize)]
 pub struct TwirpCreateResp {
-    pub cache_id: String,
+    pub ok: bool,
+    pub signed_upload_url: String,
 }
 
 #[derive(Deserialize)]
 pub struct TwirpFinalizeReq {
-    pub cache_id: String,
-    pub size_bytes: i64,
+    pub key: String,
+    pub version: String,
 }
 #[derive(Serialize)]
 pub struct TwirpFinalizeResp {
     pub ok: bool,
+    pub entry_id: String,
 }
 
 #[derive(Deserialize)]
 pub struct TwirpGetUrlReq {
-    pub cache_id: String,
+    pub key: String,
+    #[serde(default)]
+    pub restore_keys: Vec<String>,
+    pub version: String,
 }
 #[derive(Serialize)]
 pub struct TwirpGetUrlResp {
-    pub archive_location: String,
+    pub ok: bool,
+    pub signed_download_url: String,
+    pub matched_key: String,
 }

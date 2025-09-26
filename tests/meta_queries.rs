@@ -6,6 +6,8 @@ use sqlx::any::AnyPoolOptions;
 use std::time::Duration;
 use uuid::Uuid;
 
+const TEST_VERSION: &str = "v1";
+
 async fn setup_pool() -> AnyPool {
     sqlx::any::install_default_drivers();
     let pool = AnyPoolOptions::new()
@@ -27,7 +29,8 @@ async fn create_entry(pool: &AnyPool, key: &str) -> CacheEntry {
         "org",
         "repo",
         key,
-        "scope",
+        TEST_VERSION,
+        "_",
         key,
     )
     .await

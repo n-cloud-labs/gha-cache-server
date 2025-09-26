@@ -1,3 +1,6 @@
+use crate::api::{download, proxy, twirp, upload, upload_compat};
+use crate::config::{Config, DatabaseDriver};
+use crate::storage::BlobStore;
 use axum::{
     Router,
     error_handling::HandleErrorLayer,
@@ -13,9 +16,6 @@ use tower::{
     timeout::{TimeoutLayer, error::Elapsed},
 };
 use tower_http::trace::TraceLayer;
-use crate::api::{download, proxy, twirp, upload, upload_compat};
-use crate::config::{Config, DatabaseDriver};
-use crate::storage::BlobStore;
 
 #[derive(Clone)]
 pub struct AppState {
