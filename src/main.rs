@@ -1,6 +1,7 @@
 mod api;
 mod cleanup;
 mod config;
+mod db;
 mod error;
 mod http;
 mod meta;
@@ -101,8 +102,15 @@ async fn main() -> anyhow::Result<()> {
     let cleanup_settings = cfg.cleanup.clone();
     let cleanup_pool = pool.clone();
     let cleanup_store = store.clone();
+    let cleanup_driver = cfg.database_driver;
     let cleanup_task = tokio::spawn(async move {
-        cleanup::run_cleanup_loop(cleanup_pool, cleanup_store, cleanup_settings).await;
+        cleanup::run_cleanup_loop(
+            cleanup_pool,
+            cleanup_store,
+            cleanup_settings,
+            cleanup_driver,
+        )
+        .await;
     });
 
     let addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), cfg.port);

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gha_cache_server::cleanup;
-use gha_cache_server::config::CleanupSettings;
+use gha_cache_server::config::{CleanupSettings, DatabaseDriver};
 use gha_cache_server::meta::{self, CacheEntry};
 use gha_cache_server::storage::BlobStore;
 use gha_cache_server::storage::fs::FsStore;
@@ -35,9 +35,17 @@ async fn create_entry_with_file(
     ttl: i64,
     contents: &[u8],
 ) -> CacheEntry {
-    let entry = meta::create_entry(pool, "org", "repo", key, "scope", key)
-        .await
-        .expect("create entry");
+    let entry = meta::create_entry(
+        pool,
+        DatabaseDriver::Sqlite,
+        "org",
+        "repo",
+        key,
+        "scope",
+        key,
+    )
+    .await
+    .expect("create entry");
 
     let path = store_root.join(&entry.storage_key);
     if let Some(parent) = path.parent() {
@@ -86,7 +94,13 @@ async fn cleanup_removes_expired_entries_and_files() {
     let cleanup_pool = pool.clone();
     let cleanup_store: Arc<dyn BlobStore> = store.clone();
     let handle = tokio::spawn(async move {
-        cleanup::run_cleanup_loop(cleanup_pool, cleanup_store, settings).await;
+        cleanup::run_cleanup_loop(
+            cleanup_pool,
+            cleanup_store,
+            settings,
+            DatabaseDriver::Sqlite,
+        )
+        .await;
     });
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -144,7 +158,13 @@ async fn cleanup_enforces_size_limit() {
     let cleanup_pool = pool.clone();
     let cleanup_store: Arc<dyn BlobStore> = store.clone();
     let handle = tokio::spawn(async move {
-        cleanup::run_cleanup_loop(cleanup_pool, cleanup_store, settings).await;
+        cleanup::run_cleanup_loop(
+            cleanup_pool,
+            cleanup_store,
+            settings,
+            DatabaseDriver::Sqlite,
+        )
+        .await;
     });
 
     tokio::time::sleep(Duration::from_millis(200)).await;

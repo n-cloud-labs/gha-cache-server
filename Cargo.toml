@@ -40,6 +40,7 @@ rustls = { version = "0.23.32" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1" }
 sha2 = { version = "0.10" }
+sqlparser = { version = "0.41", features = ["visitor"] }
 sqlx = { version = "0.8", features = ["any", "chrono", "migrate", "mysql", "postgres", "runtime-tokio", "sqlite", "uuid"] }
 sync_wrapper = { version = "1" }
 thiserror = { version = "2" }

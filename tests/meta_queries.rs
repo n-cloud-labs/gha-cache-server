@@ -1,4 +1,5 @@
 use chrono::Utc;
+use gha_cache_server::config::DatabaseDriver;
 use gha_cache_server::meta::{self, CacheEntry};
 use sqlx::AnyPool;
 use sqlx::any::AnyPoolOptions;
@@ -20,9 +21,17 @@ async fn setup_pool() -> AnyPool {
 }
 
 async fn create_entry(pool: &AnyPool, key: &str) -> CacheEntry {
-    meta::create_entry(pool, "org", "repo", key, "scope", key)
-        .await
-        .expect("create entry")
+    meta::create_entry(
+        pool,
+        DatabaseDriver::Sqlite,
+        "org",
+        "repo",
+        key,
+        "scope",
+        key,
+    )
+    .await
+    .expect("create entry")
 }
 
 async fn set_entry_fields(
@@ -56,7 +65,7 @@ async fn expired_entry_ids_returns_only_expired_entries() {
     set_entry_fields(&pool, &boundary, 1, 99, 1).await;
 
     let now = chrono::DateTime::<Utc>::from_timestamp(100, 0).expect("timestamp");
-    let entries = meta::expired_entries(&pool, now, None)
+    let entries = meta::expired_entries(&pool, DatabaseDriver::Sqlite, now, None)
         .await
         .expect("fetch expired entries");
 
@@ -74,9 +83,14 @@ async fn expired_entries_respect_age_override() {
     set_entry_fields(&pool, &newer, 80, 1_000, 1).await;
 
     let now = chrono::DateTime::<Utc>::from_timestamp(100, 0).expect("timestamp");
-    let entries = meta::expired_entries(&pool, now, Some(Duration::from_secs(30)))
-        .await
-        .expect("fetch expired entries");
+    let entries = meta::expired_entries(
+        &pool,
+        DatabaseDriver::Sqlite,
+        now,
+        Some(Duration::from_secs(30)),
+    )
+    .await
+    .expect("fetch expired entries");
 
     let ids: Vec<Uuid> = entries.into_iter().map(|entry| entry.id).collect();
     assert_eq!(ids, vec![old.id]);
@@ -91,7 +105,9 @@ async fn total_occupancy_sums_all_entries() {
     set_entry_fields(&pool, &first, 0, 10, 128).await;
     set_entry_fields(&pool, &second, 0, 10, 256).await;
 
-    let total = meta::total_occupancy(&pool).await.expect("sum occupancy");
+    let total = meta::total_occupancy(&pool, DatabaseDriver::Sqlite)
+        .await
+        .expect("sum occupancy");
 
     assert_eq!(total, 384);
 }
@@ -107,14 +123,14 @@ async fn list_entries_ordered_sorts_by_last_access_and_limits() {
     set_entry_fields(&pool, &second, 10, 10, 1).await;
     set_entry_fields(&pool, &third, 20, 10, 1).await;
 
-    let limited = meta::list_entries_ordered(&pool, Some(2))
+    let limited = meta::list_entries_ordered(&pool, DatabaseDriver::Sqlite, Some(2))
         .await
         .expect("list limited");
     assert_eq!(limited.len(), 2);
     assert_eq!(limited[0].id, second.id);
     assert_eq!(limited[1].id, third.id);
 
-    let full = meta::list_entries_ordered(&pool, None)
+    let full = meta::list_entries_ordered(&pool, DatabaseDriver::Sqlite, None)
         .await
         .expect("list full");
     let order: Vec<Uuid> = full.into_iter().map(|entry| entry.id).collect();
@@ -127,11 +143,17 @@ async fn delete_entry_removes_row_and_cascades_uploads() {
     let entry = create_entry(&pool, "target").await;
 
     let upload_id = Uuid::new_v4().to_string();
-    meta::upsert_upload(&pool, entry.id, &upload_id, "reserved")
-        .await
-        .expect("create upload");
+    meta::upsert_upload(
+        &pool,
+        DatabaseDriver::Sqlite,
+        entry.id,
+        &upload_id,
+        "reserved",
+    )
+    .await
+    .expect("create upload");
 
-    meta::delete_entry(&pool, entry.id)
+    meta::delete_entry(&pool, DatabaseDriver::Sqlite, entry.id)
         .await
         .expect("delete entry");
 
