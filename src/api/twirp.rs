@@ -1,11 +1,22 @@
-use axum::{Json, extract::State};
+use std::marker::PhantomData;
+use std::time::Duration;
+
+use axum::{
+    Json,
+    extract::{FromRequest, Request, State},
+    http::{HeaderValue, header},
+    response::{IntoResponse, Response},
+};
 use base64::Engine;
 use base64::engine::general_purpose;
+use http_body_util::BodyExt;
+use prost::Message;
+use serde::{Serialize, de::DeserializeOwned};
 use sqlx::Row;
-use std::time::Duration;
 use uuid::Uuid;
 
-use super::types::*;
+use crate::api::proto::cache;
+use crate::api::types::*;
 use crate::api::upload::{normalize_key, normalize_version};
 use crate::db::rewrite_placeholders;
 use crate::error::{ApiError, Result};
@@ -27,11 +38,155 @@ fn unique_keys(primary: String, restores: &[String]) -> Vec<String> {
     result
 }
 
+#[derive(Clone, Copy, Debug)]
+enum TwirpFormat {
+    Json,
+    Protobuf,
+}
+
+pub struct TwirpRequest<T, P> {
+    data: T,
+    format: TwirpFormat,
+    _marker: PhantomData<P>,
+}
+
+impl<T, P> TwirpRequest<T, P> {
+    fn into_parts(self) -> (T, TwirpFormat) {
+        (self.data, self.format)
+    }
+
+    #[allow(dead_code)]
+    pub fn from_json(data: T) -> Self {
+        Self {
+            data,
+            format: TwirpFormat::Json,
+            _marker: PhantomData,
+        }
+    }
+}
+
+fn parse_content_type(value: &HeaderValue) -> Option<TwirpFormat> {
+    let raw = value.to_str().ok()?.split(';').next()?.trim();
+    match raw {
+        "application/json" => Some(TwirpFormat::Json),
+        "application/protobuf" => Some(TwirpFormat::Protobuf),
+        _ => None,
+    }
+}
+
+fn pick_response_format(header: Option<&HeaderValue>, fallback: TwirpFormat) -> TwirpFormat {
+    let Some(value) = header.and_then(|h| h.to_str().ok()) else {
+        return fallback;
+    };
+    let mut wants_json = false;
+    for candidate in value.split(',') {
+        let ty = candidate.split(';').next().map(str::trim);
+        match ty {
+            Some("application/protobuf") => return TwirpFormat::Protobuf,
+            Some("application/json") => wants_json = true,
+            _ => continue,
+        }
+    }
+    if wants_json {
+        TwirpFormat::Json
+    } else {
+        fallback
+    }
+}
+
+impl<S, T, P> FromRequest<S> for TwirpRequest<T, P>
+where
+    S: Send + Sync,
+    T: DeserializeOwned + TryFrom<P, Error = ApiError>,
+    P: Message + Default,
+{
+    type Rejection = ApiError;
+
+    async fn from_request(req: Request, _state: &S) -> Result<Self> {
+        let (parts, body) = req.into_parts();
+        let content_type = parts
+            .headers
+            .get(header::CONTENT_TYPE)
+            .ok_or_else(|| ApiError::BadRequest("missing Content-Type header".into()))?;
+        let request_format = parse_content_type(content_type).ok_or_else(|| {
+            ApiError::BadRequest(format!(
+                "unsupported Content-Type: {}",
+                content_type.to_str().unwrap_or_default()
+            ))
+        })?;
+        let response_format =
+            pick_response_format(parts.headers.get(header::ACCEPT), request_format);
+
+        let collected = body
+            .collect()
+            .await
+            .map_err(|err| ApiError::BadRequest(format!("failed to read request body: {err}")))?;
+        let bytes = collected.to_bytes();
+
+        let data = match request_format {
+            TwirpFormat::Json => serde_json::from_slice(&bytes)
+                .map_err(|err| ApiError::BadRequest(format!("invalid JSON payload: {err}")))?,
+            TwirpFormat::Protobuf => {
+                let proto = P::decode(bytes).map_err(|err| {
+                    ApiError::BadRequest(format!("invalid protobuf payload: {err}"))
+                })?;
+                T::try_from(proto)?
+            }
+        };
+
+        Ok(Self {
+            data,
+            format: response_format,
+            _marker: PhantomData,
+        })
+    }
+}
+
+pub struct TwirpResponse<T, P> {
+    data: T,
+    format: TwirpFormat,
+    _marker: PhantomData<P>,
+}
+
+impl<T, P> TwirpResponse<T, P> {
+    fn new(data: T, format: TwirpFormat) -> Self {
+        Self {
+            data,
+            format,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<T, P> IntoResponse for TwirpResponse<T, P>
+where
+    T: Serialize + Into<P>,
+    P: Message,
+{
+    fn into_response(self) -> Response {
+        match self.format {
+            TwirpFormat::Json => Json(self.data).into_response(),
+            TwirpFormat::Protobuf => {
+                let proto: P = self.data.into();
+                (
+                    [(
+                        header::CONTENT_TYPE,
+                        HeaderValue::from_static("application/protobuf"),
+                    )],
+                    proto.encode_to_vec(),
+                )
+                    .into_response()
+            }
+        }
+    }
+}
+
 // POST /twirp/.../CreateCacheEntry
 pub async fn create_cache_entry(
     State(st): State<AppState>,
-    Json(req): Json<TwirpCreateReq>,
-) -> Result<Json<TwirpCreateResp>> {
+    request: TwirpRequest<TwirpCreateReq, cache::CreateCacheEntryRequest>,
+) -> Result<TwirpResponse<TwirpCreateResp, cache::CreateCacheEntryResponse>> {
+    let (req, format) = request.into_parts();
     let key = normalize_key(&req.key)?;
     let version = normalize_version(&req.version)?;
     let storage_key = format!(
@@ -64,26 +219,33 @@ pub async fn create_cache_entry(
         "reserved",
     )
     .await?;
-    Ok(Json(TwirpCreateResp {
-        ok: true,
-        signed_upload_url: build_upload_url(entry.id),
-    }))
+    Ok(TwirpResponse::new(
+        TwirpCreateResp {
+            ok: true,
+            signed_upload_url: build_upload_url(entry.id),
+        },
+        format,
+    ))
 }
 
 // POST /twirp/.../FinalizeCacheEntryUpload
 pub async fn finalize_cache_entry_upload(
     State(st): State<AppState>,
-    Json(req): Json<TwirpFinalizeReq>,
-) -> Result<Json<TwirpFinalizeResp>> {
+    request: TwirpRequest<TwirpFinalizeReq, cache::FinalizeCacheEntryUploadRequest>,
+) -> Result<TwirpResponse<TwirpFinalizeResp, cache::FinalizeCacheEntryUploadResponse>> {
+    let (req, format) = request.into_parts();
     let key = normalize_key(&req.key)?;
     let version = normalize_version(&req.version)?;
     let Some(entry) =
         meta::find_entry_by_key_version(&st.pool, st.database_driver, &key, &version).await?
     else {
-        return Ok(Json(TwirpFinalizeResp {
-            ok: false,
-            entry_id: String::new(),
-        }));
+        return Ok(TwirpResponse::new(
+            TwirpFinalizeResp {
+                ok: false,
+                entry_id: String::new(),
+            },
+            format,
+        ));
     };
     let query = rewrite_placeholders(
         "SELECT upload_id, storage_key FROM cache_uploads u JOIN cache_entries e ON e.id = u.entry_id WHERE e.id = ?",
@@ -101,17 +263,21 @@ pub async fn finalize_cache_entry_upload(
         .await
         .map_err(|e| ApiError::S3(format!("{e}")))?;
 
-    Ok(Json(TwirpFinalizeResp {
-        ok: true,
-        entry_id: entry.id.to_string(),
-    }))
+    Ok(TwirpResponse::new(
+        TwirpFinalizeResp {
+            ok: true,
+            entry_id: entry.id.to_string(),
+        },
+        format,
+    ))
 }
 
 // POST /twirp/.../GetCacheEntryDownloadURL
 pub async fn get_cache_entry_download_url(
     State(st): State<AppState>,
-    Json(req): Json<TwirpGetUrlReq>,
-) -> Result<Json<TwirpGetUrlResp>> {
+    request: TwirpRequest<TwirpGetUrlReq, cache::GetCacheEntryDownloadUrlRequest>,
+) -> Result<TwirpResponse<TwirpGetUrlResp, cache::GetCacheEntryDownloadUrlResponse>> {
+    let (req, format) = request.into_parts();
     let key = normalize_key(&req.key)?;
     let version = normalize_version(&req.version)?;
     let mut restore_keys = Vec::with_capacity(req.restore_keys.len());
@@ -132,18 +298,45 @@ pub async fn get_cache_entry_download_url(
                 .await
                 .map_err(|e| ApiError::S3(format!("{e}")))?;
             if let Some(url) = pres {
-                return Ok(Json(TwirpGetUrlResp {
-                    ok: true,
-                    signed_download_url: url.url.to_string(),
-                    matched_key: candidate,
-                }));
+                return Ok(TwirpResponse::new(
+                    TwirpGetUrlResp {
+                        ok: true,
+                        signed_download_url: url.url.to_string(),
+                        matched_key: candidate,
+                    },
+                    format,
+                ));
             }
         }
     }
 
-    Ok(Json(TwirpGetUrlResp {
-        ok: false,
-        signed_download_url: String::new(),
-        matched_key: String::new(),
-    }))
+    Ok(TwirpResponse::new(
+        TwirpGetUrlResp {
+            ok: false,
+            signed_download_url: String::new(),
+            matched_key: String::new(),
+        },
+        format,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_content_type_handles_parameters() {
+        let header = HeaderValue::from_str("application/protobuf; charset=utf-8").unwrap();
+        assert!(matches!(
+            parse_content_type(&header),
+            Some(TwirpFormat::Protobuf)
+        ));
+    }
+
+    #[test]
+    fn accept_header_prefers_protobuf() {
+        let header = HeaderValue::from_static("application/json, application/protobuf");
+        let format = pick_response_format(Some(&header), TwirpFormat::Json);
+        assert!(matches!(format, TwirpFormat::Protobuf));
+    }
 }
