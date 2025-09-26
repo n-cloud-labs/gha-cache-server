@@ -127,7 +127,7 @@ mod tests {
 
     use crate::api::proxy::{self, ProxyHttpClient, RESULTS_RECEIVER_ORIGIN};
     use crate::config::{BlobStoreSelector, CleanupSettings, Config, DatabaseDriver, S3Config};
-    use crate::storage::{BlobStore, PresignedUrl};
+    use crate::storage::{BlobDownloadStream, BlobStore, PresignedUrl};
 
     #[derive(Clone, Debug)]
     struct RecordedRequest {
@@ -229,6 +229,10 @@ mod tests {
             _key: &str,
             _ttl: Duration,
         ) -> anyhow::Result<Option<PresignedUrl>> {
+            Ok(None)
+        }
+
+        async fn get(&self, _key: &str) -> anyhow::Result<Option<BlobDownloadStream>> {
             Ok(None)
         }
 

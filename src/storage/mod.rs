@@ -16,7 +16,9 @@ pub struct PresignedUrl {
 /// The stream yields the raw body of a single part and propagates failures via
 /// [`anyhow::Error`]. Implementations must consume the stream at most once and
 /// either upload the entire payload or report an error.
-pub type BlobUploadPayload = BoxStream<'static, anyhow::Result<Bytes>>;
+pub type BlobStream = BoxStream<'static, anyhow::Result<Bytes>>;
+pub type BlobUploadPayload = BlobStream;
+pub type BlobDownloadStream = BlobStream;
 
 #[async_trait]
 pub trait BlobStore: Send + Sync + 'static {
@@ -41,6 +43,8 @@ pub trait BlobStore: Send + Sync + 'static {
     ) -> anyhow::Result<()>;
 
     async fn presign_get(&self, key: &str, ttl: Duration) -> anyhow::Result<Option<PresignedUrl>>;
+
+    async fn get(&self, key: &str) -> anyhow::Result<Option<BlobDownloadStream>>;
 
     #[allow(dead_code)]
     async fn delete(&self, key: &str) -> anyhow::Result<()>;

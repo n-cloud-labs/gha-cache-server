@@ -7,11 +7,12 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::StreamExt;
 use sha2::{Digest, Sha256};
-use tokio::fs::{self, OpenOptions};
+use tokio::fs::{self, File, OpenOptions};
 use tokio::io::{self, AsyncWriteExt};
+use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
-use crate::storage::{BlobStore, BlobUploadPayload, PresignedUrl};
+use crate::storage::{BlobDownloadStream, BlobStore, BlobUploadPayload, PresignedUrl};
 
 #[derive(Clone)]
 pub struct FsStore {
@@ -251,6 +252,22 @@ impl BlobStore for FsStore {
 
     async fn presign_get(&self, _key: &str, _ttl: Duration) -> Result<Option<PresignedUrl>> {
         Ok(None)
+    }
+
+    async fn get(&self, key: &str) -> Result<Option<BlobDownloadStream>> {
+        let path = self.destination_path(key)?;
+        let file = match File::open(&path).await {
+            Ok(file) => file,
+            Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("failed to open blob at {}", path.display()));
+            }
+        };
+
+        let stream = ReaderStream::new(file).map(|chunk| chunk.map_err(anyhow::Error::from));
+
+        Ok(Some(Box::pin(stream)))
     }
 
     async fn delete(&self, key: &str) -> Result<()> {

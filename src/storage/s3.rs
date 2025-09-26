@@ -1,4 +1,5 @@
 use aws_config::BehaviorVersion;
+use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::{
     Client,
@@ -6,16 +7,17 @@ use aws_sdk_s3::{
     types::{CompletedMultipartUpload, CompletedPart},
 };
 use aws_smithy_types::body::Error as SdkBodyError;
-use futures::TryStreamExt;
+use futures::{StreamExt, TryStreamExt};
 use http_body::Frame;
 use pin_project_lite::pin_project;
 use std::time::Duration;
 use sync_wrapper::SyncWrapper;
+use tokio_util::io::ReaderStream;
 
 #[cfg(test)]
 use axum::body::Body;
 
-use crate::storage::{BlobStore, BlobUploadPayload, PresignedUrl};
+use crate::storage::{BlobDownloadStream, BlobStore, BlobUploadPayload, PresignedUrl};
 
 #[derive(Clone)]
 pub struct S3Store {
@@ -169,6 +171,31 @@ impl BlobStore for S3Store {
         let presigned = req.presigned(PresigningConfig::expires_in(ttl)?).await?;
         let url: url::Url = presigned.uri().to_string().parse()?;
         Ok(Some(PresignedUrl { url }))
+    }
+
+    async fn get(&self, key: &str) -> anyhow::Result<Option<BlobDownloadStream>> {
+        match self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await
+        {
+            Ok(output) => {
+                let reader = output.body.into_async_read();
+                let stream =
+                    ReaderStream::new(reader).map(|chunk| chunk.map_err(anyhow::Error::from));
+                Ok(Some(Box::pin(stream)))
+            }
+            Err(SdkError::ServiceError(err)) => {
+                if err.err().is_no_such_key() {
+                    return Ok(None);
+                }
+                Err(anyhow::Error::msg(format!("get object failed: {err:?}")))
+            }
+            Err(err) => Err(err.into()),
+        }
     }
 
     async fn delete(&self, key: &str) -> anyhow::Result<()> {
