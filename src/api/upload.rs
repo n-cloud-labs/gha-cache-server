@@ -20,6 +20,7 @@ use crate::{
 };
 
 const MAX_CACHE_KEY_LENGTH: usize = 512;
+const MAX_CACHE_VERSION_LENGTH: usize = 512;
 
 #[derive(Debug, Deserialize)]
 pub struct ListCachesQuery {
@@ -54,10 +55,77 @@ struct CacheListRow {
     id: Uuid,
     scope: String,
     key: String,
+    version: String,
     size_bytes: i64,
     storage_key: String,
     created_at: DateTime<Utc>,
     last_access_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReserveCacheRequest {
+    key: String,
+    version: String,
+}
+
+fn validate_identifier(value: &str, label: &str, max_len: usize) -> Result<()> {
+    if value.len() > max_len {
+        return Err(ApiError::BadRequest(format!(
+            "{label} exceeds maximum length"
+        )));
+    }
+    if value.chars().any(|c| c.is_control()) {
+        return Err(ApiError::BadRequest(format!(
+            "{label} contains invalid characters"
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn normalize_key(raw: &str) -> Result<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(ApiError::BadRequest("key is required".into()));
+    }
+    validate_identifier(trimmed, "key", MAX_CACHE_KEY_LENGTH)?;
+    Ok(trimmed.to_string())
+}
+
+pub(crate) fn normalize_version(raw: &str) -> Result<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(ApiError::BadRequest("version is required".into()));
+    }
+    validate_identifier(trimmed, "version", MAX_CACHE_VERSION_LENGTH)?;
+    Ok(trimmed.to_string())
+}
+
+fn parse_keys_parameter(raw: Option<&String>) -> Result<Vec<String>> {
+    let value =
+        raw.ok_or_else(|| ApiError::BadRequest("query parameter 'keys' is required".into()))?;
+    let mut keys = Vec::new();
+    for fragment in value.split(',') {
+        if fragment.trim().is_empty() {
+            continue;
+        }
+        let key = normalize_key(fragment)?;
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+    }
+    if keys.is_empty() {
+        return Err(ApiError::BadRequest(
+            "query parameter 'keys' is required".into(),
+        ));
+    }
+    Ok(keys)
+}
+
+fn parse_version_parameter(raw: Option<&String>) -> Result<String> {
+    let value =
+        raw.ok_or_else(|| ApiError::BadRequest("query parameter 'version' is required".into()))?;
+    normalize_version(value)
 }
 
 fn parse_uuid(value: String) -> sqlx::Result<Uuid> {
@@ -94,7 +162,7 @@ async fn build_list_response(
             cache_id: entry.id,
             scope: entry.scope,
             cache_key: entry.key,
-            cache_version: None,
+            cache_version: (!entry.version.is_empty()).then_some(entry.version.clone()),
             creation_time: entry.created_at,
             last_access_time: entry.last_access_at,
             archive_location,
@@ -113,14 +181,7 @@ fn extract_list_key(key: Option<String>) -> Result<String> {
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
         .ok_or_else(|| ApiError::BadRequest("query parameter 'key' is required".into()))?;
-    if raw.len() > MAX_CACHE_KEY_LENGTH {
-        return Err(ApiError::BadRequest("key exceeds maximum length".into()));
-    }
-    if raw.chars().any(|c| c.is_control()) {
-        return Err(ApiError::BadRequest(
-            "key contains invalid characters".into(),
-        ));
-    }
+    validate_identifier(&raw, "key", MAX_CACHE_KEY_LENGTH)?;
     Ok(raw)
 }
 
@@ -132,7 +193,7 @@ pub async fn list_caches(
     let key = extract_list_key(query.key)?;
 
     let query = rewrite_placeholders(
-        "SELECT id, scope, cache_key, size_bytes, storage_key, created_at, last_access_at FROM cache_entries WHERE cache_key = ? ORDER BY created_at DESC",
+        "SELECT id, scope, cache_key, cache_version, size_bytes, storage_key, created_at, last_access_at FROM cache_entries WHERE cache_key = ? ORDER BY created_at DESC",
         st.database_driver,
     );
     let rows = sqlx::query(&query).bind(&key).fetch_all(&st.pool).await?;
@@ -146,6 +207,7 @@ pub async fn list_caches(
             id,
             scope: row.try_get("scope")?,
             key: row.try_get("cache_key")?,
+            version: row.try_get("cache_version")?,
             size_bytes: row.try_get("size_bytes")?,
             storage_key: row.try_get("storage_key")?,
             created_at,
@@ -162,53 +224,63 @@ pub async fn get_cache_entry(
     State(st): State<AppState>,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Result<(StatusCode, Json<serde_json::Value>)> {
-    let keys = q.get("keys").cloned().unwrap_or_default();
-    // let version = q.get("version").cloned().unwrap_or_default();
-    // Simplified lookup: pick first matching entry (TODO: add restore-keys precedence)
+    let keys = parse_keys_parameter(q.get("keys")).map_err(|err| match &err {
+        ApiError::BadRequest(message) if message == "key is required" => {
+            ApiError::BadRequest("query parameter 'keys' is required".into())
+        }
+        _ => err,
+    })?;
+    let version = parse_version_parameter(q.get("version"))?;
+
     let query = rewrite_placeholders(
-        "SELECT id, storage_key, created_at FROM cache_entries WHERE cache_key = ? ORDER BY created_at DESC LIMIT 1",
+        "SELECT id, cache_key, scope, storage_key, created_at FROM cache_entries WHERE cache_key = ? AND cache_version = ? ORDER BY created_at DESC LIMIT 1",
         st.database_driver,
     );
-    let rec = sqlx::query(&query)
-        .bind(keys.split(',').next().unwrap_or(""))
-        .fetch_optional(&st.pool)
-        .await?;
 
-    if let Some(row) = rec {
-        let id = parse_uuid(row.try_get::<String, _>("id")?)?;
-        let created_at = timestamp_to_datetime(row.try_get::<i64, _>("created_at")?)?;
-        // Return 200 with archiveLocation (direct presigned URL); scope kept generic
-        let storage_key: String = row.try_get("storage_key")?;
-        meta::touch_entry(&st.pool, st.database_driver, id).await?;
-        let url = st
-            .store
-            .presign_get(&storage_key, std::time::Duration::from_secs(3600))
-            .await
-            .map_err(|e| ApiError::S3(format!("{e}")))?
-            .map(|p| p.url.to_string())
-            .unwrap_or_default();
-        let body = serde_json::json!({
-        "cacheKey": keys,
-        "scope": "",
-        "creationTime": created_at,
-        "archiveLocation": url,
-        });
-        return Ok((StatusCode::OK, Json(body)));
+    for key in keys {
+        let rec = sqlx::query(&query)
+            .bind(&key)
+            .bind(&version)
+            .fetch_optional(&st.pool)
+            .await?;
+
+        if let Some(row) = rec {
+            let id = parse_uuid(row.try_get::<String, _>("id")?)?;
+            let created_at = timestamp_to_datetime(row.try_get::<i64, _>("created_at")?)?;
+            let storage_key: String = row.try_get("storage_key")?;
+            let scope: String = row.try_get("scope")?;
+            meta::touch_entry(&st.pool, st.database_driver, id).await?;
+            let url = st
+                .store
+                .presign_get(&storage_key, std::time::Duration::from_secs(3600))
+                .await
+                .map_err(|e| ApiError::S3(format!("{e}")))?
+                .map(|p| p.url.to_string())
+                .unwrap_or_default();
+            let body = serde_json::json!({
+                "cacheKey": key,
+                "scope": scope,
+                "creationTime": created_at,
+                "archiveLocation": url,
+            });
+            return Ok((StatusCode::OK, Json(body)));
+        }
     }
+
     Ok((StatusCode::NO_CONTENT, Json(serde_json::json!({}))))
 }
 
 // ====== actions/cache: POST /_apis/artifactcache/caches { key, version } ======
 pub async fn reserve_cache(
     State(st): State<AppState>,
-    Json(req): Json<serde_json::Value>,
+    Json(req): Json<ReserveCacheRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    let key = req.get("key").and_then(|v| v.as_str()).unwrap_or("");
-    let version = req.get("version").and_then(|v| v.as_str()).unwrap_or("");
+    let key = normalize_key(&req.key)?;
+    let version = normalize_version(&req.version)?;
 
     let storage_key = format!(
         "ac/org/_/repo/_/key/{}/{}",
-        general_purpose::STANDARD.encode(key),
+        general_purpose::STANDARD.encode(&key),
         Uuid::new_v4()
     );
     let entry = meta::create_entry(
@@ -216,8 +288,9 @@ pub async fn reserve_cache(
         st.database_driver,
         "_",
         "_",
-        key,
-        version,
+        &key,
+        &version,
+        "_",
         &storage_key,
     )
     .await?;
@@ -390,6 +463,7 @@ mod tests {
             id: Uuid::new_v4(),
             scope: "refs/heads/main".into(),
             key: "demo".into(),
+            version: "v1".into(),
             size_bytes: 42,
             storage_key: "storage/demo".into(),
             created_at: Utc::now(),
@@ -409,6 +483,7 @@ mod tests {
         assert_eq!(store.call_count(), 1);
         let cache = response.artifact_caches.first().expect("cache entry");
         assert_eq!(cache.cache_key, rows[0].key);
+        assert_eq!(cache.cache_version.as_deref(), Some("v1"));
         assert_eq!(
             cache.archive_location.as_deref(),
             Some("https://example.com/archive")
@@ -443,5 +518,12 @@ mod tests {
         let err =
             extract_list_key(Some("bad\u{0007}".into())).expect_err("control chars should error");
         assert!(matches!(err, ApiError::BadRequest(_)));
+    }
+
+    #[test]
+    fn parse_keys_parameter_handles_multiple_values() {
+        let raw = "primary, fallback, primary ,".to_string();
+        let parsed = parse_keys_parameter(Some(&raw)).expect("keys");
+        assert_eq!(parsed, vec!["primary", "fallback"]);
     }
 }

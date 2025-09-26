@@ -15,6 +15,7 @@ pub struct CacheEntry {
     pub org: String,
     pub repo: String,
     pub key: String,
+    pub version: String,
     pub scope: String,
     pub size_bytes: i64,
     pub checksum: Option<String>,
@@ -66,6 +67,7 @@ fn map_cache_entry(row: sqlx::any::AnyRow) -> Result<CacheEntry, sqlx::Error> {
         org: row.try_get("org")?,
         repo: row.try_get("repo")?,
         key: row.try_get("cache_key")?,
+        version: row.try_get("cache_version")?,
         scope: row.try_get("scope")?,
         size_bytes: row.try_get("size_bytes")?,
         checksum: row.try_get("checksum")?,
@@ -135,7 +137,7 @@ async fn fetch_entry(
     id: Uuid,
 ) -> Result<CacheEntry, sqlx::Error> {
     let query = rewrite_placeholders(
-        "SELECT id, org, repo, cache_key, scope, size_bytes, checksum, storage_key, created_at, last_access_at, ttl_seconds FROM cache_entries WHERE id = ?",
+        "SELECT id, org, repo, cache_key, cache_version, scope, size_bytes, checksum, storage_key, created_at, last_access_at, ttl_seconds FROM cache_entries WHERE id = ?",
         driver,
     );
     let row = sqlx::query(&query)
@@ -189,7 +191,7 @@ pub async fn expired_entries(
     let rows = if let Some(limit) = max_entry_age {
         let secs = i64::try_from(limit.as_secs()).unwrap_or(i64::MAX);
         let query = rewrite_placeholders(
-            "SELECT id, org, repo, cache_key, scope, size_bytes, checksum, storage_key, created_at, last_access_at, ttl_seconds \
+            "SELECT id, org, repo, cache_key, cache_version, scope, size_bytes, checksum, storage_key, created_at, last_access_at, ttl_seconds \
 FROM cache_entries WHERE last_access_at + CASE WHEN ttl_seconds > ? THEN ? ELSE ttl_seconds END < ? ORDER BY last_access_at ASC",
             driver,
         );
@@ -201,7 +203,7 @@ FROM cache_entries WHERE last_access_at + CASE WHEN ttl_seconds > ? THEN ? ELSE 
             .await?
     } else {
         let query = rewrite_placeholders(
-            "SELECT id, org, repo, cache_key, scope, size_bytes, checksum, storage_key, created_at, last_access_at, ttl_seconds \
+            "SELECT id, org, repo, cache_key, cache_version, scope, size_bytes, checksum, storage_key, created_at, last_access_at, ttl_seconds \
 FROM cache_entries WHERE last_access_at + ttl_seconds < ? ORDER BY last_access_at ASC",
             driver,
         );
@@ -239,7 +241,7 @@ pub async fn list_entries_ordered(
 ) -> Result<Vec<CacheEntry>, sqlx::Error> {
     if let Some(limit) = limit {
         let query = rewrite_placeholders(
-            "SELECT id, org, repo, cache_key, scope, size_bytes, checksum, storage_key, created_at, last_access_at, ttl_seconds FROM cache_entries ORDER BY last_access_at ASC LIMIT ?",
+            "SELECT id, org, repo, cache_key, cache_version, scope, size_bytes, checksum, storage_key, created_at, last_access_at, ttl_seconds FROM cache_entries ORDER BY last_access_at ASC LIMIT ?",
             driver,
         );
         let rows = sqlx::query(&query).bind(limit).fetch_all(pool).await?;
@@ -247,7 +249,7 @@ pub async fn list_entries_ordered(
         rows.into_iter().map(map_cache_entry).collect()
     } else {
         let query = rewrite_placeholders(
-            "SELECT id, org, repo, cache_key, scope, size_bytes, checksum, storage_key, created_at, last_access_at, ttl_seconds FROM cache_entries ORDER BY last_access_at ASC",
+            "SELECT id, org, repo, cache_key, cache_version, scope, size_bytes, checksum, storage_key, created_at, last_access_at, ttl_seconds FROM cache_entries ORDER BY last_access_at ASC",
             driver,
         );
         let rows = sqlx::query(&query).fetch_all(pool).await?;
@@ -256,18 +258,20 @@ pub async fn list_entries_ordered(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn create_entry(
     pool: &AnyPool,
     driver: DatabaseDriver,
     org: &str,
     repo: &str,
     key: &str,
+    version: &str,
     scope: &str,
     storage_key: &str,
 ) -> Result<CacheEntry, sqlx::Error> {
     let id = Uuid::new_v4();
     let query = rewrite_placeholders(
-        "INSERT INTO cache_entries (id, org, repo, cache_key, scope, storage_key) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO cache_entries (id, org, repo, cache_key, cache_version, scope, storage_key) VALUES (?, ?, ?, ?, ?, ?, ?)",
         driver,
     );
     sqlx::query(&query)
@@ -275,12 +279,36 @@ pub async fn create_entry(
         .bind(org)
         .bind(repo)
         .bind(key)
+        .bind(version)
         .bind(scope)
         .bind(storage_key)
         .execute(pool)
         .await?;
 
     fetch_entry(pool, driver, id).await
+}
+
+pub async fn find_entry_by_key_version(
+    pool: &AnyPool,
+    driver: DatabaseDriver,
+    key: &str,
+    version: &str,
+) -> Result<Option<CacheEntry>, sqlx::Error> {
+    let query = rewrite_placeholders(
+        "SELECT id, org, repo, cache_key, cache_version, scope, size_bytes, checksum, storage_key, created_at, last_access_at, ttl_seconds FROM cache_entries WHERE cache_key = ? AND cache_version = ? ORDER BY created_at DESC LIMIT 1",
+        driver,
+    );
+    let maybe_row = sqlx::query(&query)
+        .bind(key)
+        .bind(version)
+        .fetch_optional(pool)
+        .await?;
+
+    if let Some(row) = maybe_row {
+        Ok(Some(map_cache_entry(row)?))
+    } else {
+        Ok(None)
+    }
 }
 
 pub async fn upsert_upload(

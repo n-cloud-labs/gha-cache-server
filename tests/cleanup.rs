@@ -13,6 +13,8 @@ use tempfile::TempDir;
 use tokio::fs;
 use tokio::task::yield_now;
 
+const TEST_VERSION: &str = "v1";
+
 async fn setup_pool() -> AnyPool {
     sqlx::any::install_default_drivers();
     let pool = AnyPoolOptions::new()
@@ -41,7 +43,8 @@ async fn create_entry_with_file(
         "org",
         "repo",
         key,
-        "scope",
+        TEST_VERSION,
+        "_",
         key,
     )
     .await
