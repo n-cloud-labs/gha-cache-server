@@ -1,6 +1,7 @@
 pub mod api;
 pub mod cleanup;
 pub mod config;
+pub mod db;
 pub mod error;
 pub mod http;
 pub mod meta;
