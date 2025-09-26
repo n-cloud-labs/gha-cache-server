@@ -71,7 +71,6 @@ pub(crate) fn build_router_with_proxy(
             "/download/{cache_key}/{filename}",
             get(download::download_proxy),
         )
-
         // TWIRP endpoints
         .route(
             "/twirp/github.actions.results.api.v1.CacheService/CreateCacheEntry",

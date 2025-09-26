@@ -23,10 +23,6 @@ use crate::error::{ApiError, Result};
 use crate::http::AppState;
 use crate::meta;
 
-fn build_upload_url(id: Uuid) -> String {
-    format!("/upload/{id}")
-}
-
 #[derive(Clone, Debug)]
 struct RequestOrigin {
     scheme: String,
@@ -74,6 +70,10 @@ impl Default for RequestOrigin {
             authority: "localhost".into(),
         }
     }
+}
+
+fn build_upload_url(origin: &RequestOrigin, id: Uuid) -> String {
+    origin.absolute(&format!("/upload/{id}"))
 }
 
 fn build_download_url(origin: &RequestOrigin, cache_key: &str, id: Uuid) -> String {
@@ -244,7 +244,7 @@ pub async fn create_cache_entry(
     State(st): State<AppState>,
     request: TwirpRequest<TwirpCreateReq, cache::CreateCacheEntryRequest>,
 ) -> Result<TwirpResponse<TwirpCreateResp, cache::CreateCacheEntryResponse>> {
-    let (req, format, _) = request.into_parts();
+    let (req, format, origin) = request.into_parts();
     let key = normalize_key(&req.key)?;
     let version = normalize_version(&req.version)?;
     let storage_key = format!(
@@ -280,7 +280,7 @@ pub async fn create_cache_entry(
     Ok(TwirpResponse::new(
         TwirpCreateResp {
             ok: true,
-            signed_upload_url: build_upload_url(entry.id),
+            signed_upload_url: build_upload_url(&origin, entry.id),
         },
         format,
     ))
