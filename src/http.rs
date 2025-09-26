@@ -60,21 +60,19 @@ pub(crate) fn build_router_with_proxy(
         )
         // PATCH chunks
         .route(
-            "/_apis/artifactcache/caches/:id",
+            "/_apis/artifactcache/caches/{id}",
             patch(upload::upload_chunk),
         )
-        // POST commit
         .route(
-            "/_apis/artifactcache/caches/:id",
+            "/_apis/artifactcache/caches/{id}",
             post(upload::commit_cache),
         )
-        // ===== Extra routes you asked =====
-        // 1) GET /download/{cache_key}/{filename}
         .route(
-            "/download/:cache_key/:filename",
+            "/download/{cache_key}/{filename}",
             get(download::download_proxy),
         )
-        // 2) TWIRP endpoints
+
+        // TWIRP endpoints
         .route(
             "/twirp/github.actions.results.api.v1.CacheService/CreateCacheEntry",
             post(twirp::create_cache_entry),
@@ -88,7 +86,7 @@ pub(crate) fn build_router_with_proxy(
             post(twirp::get_cache_entry_download_url),
         )
         // 3) PUT /upload/{cache-id}
-        .route("/upload/:cache_id", put(upload_compat::put_upload))
+        .route("/upload/{cache_id}", put(upload_compat::put_upload))
         .fallback(proxy::proxy_unknown)
         .with_state(app_state)
         .layer(
