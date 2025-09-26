@@ -11,6 +11,7 @@ BuildRequires:  cmake
 BuildRequires:  gcc
 BuildRequires:  make
 BuildRequires:  pkgconfig
+BuildRequires:  protobuf-compiler
 BuildRequires:  systemd-rpm-macros
 Requires:       systemd
 Requires(post): shadow-utils
