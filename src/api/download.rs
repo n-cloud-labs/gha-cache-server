@@ -1,7 +1,7 @@
 use axum::{
     body::Body,
     extract::{Path, State},
-    http::{StatusCode, header},
+    http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Redirect, Response},
 };
 use sqlx::Row;
@@ -13,16 +13,20 @@ use crate::error::{ApiError, Result};
 use crate::http::AppState;
 use crate::meta;
 
-// GET /download/{random}/{filename}
-// We treat {random} as an opaque object key prefix (already known/stored in DB), and {filename} ignored for routing convenience
+// GET /download/{cache_key}/{filename}
+// We validate the {cache_key} against the database record and expect {filename} to be
+// "{entry_id}.tgz" so clients receive stable names when downloading through the proxy.
 pub async fn download_proxy(
     State(st): State<AppState>,
-    Path((random, _filename)): Path<(String, String)>,
+    Path((cache_key, filename)): Path<(String, String)>,
 ) -> Result<Response> {
+    let Some(entry_id) = filename.strip_suffix(".tgz") else {
+        return Err(ApiError::BadRequest("invalid cache filename".into()));
+    };
     let entry_id =
-        Uuid::parse_str(&random).map_err(|_| ApiError::BadRequest("invalid cache id".into()))?;
+        Uuid::parse_str(entry_id).map_err(|_| ApiError::BadRequest("invalid cache id".into()))?;
     let query = rewrite_placeholders(
-        "SELECT storage_key FROM cache_entries WHERE id = ?",
+        "SELECT storage_key, cache_key FROM cache_entries WHERE id = ?",
         st.database_driver,
     );
     let rec = sqlx::query(&query)
@@ -31,6 +35,10 @@ pub async fn download_proxy(
         .await?;
     let row = rec.ok_or(ApiError::NotFound)?;
     let storage_key: String = row.try_get("storage_key")?;
+    let stored_key: String = row.try_get("cache_key")?;
+    if stored_key != cache_key {
+        return Err(ApiError::NotFound);
+    }
     meta::touch_entry(&st.pool, st.database_driver, entry_id).await?;
     if st.enable_direct {
         let pres = st
@@ -51,10 +59,15 @@ pub async fn download_proxy(
         return Err(ApiError::NotFound);
     };
     let body = Body::from_stream(stream);
-    let response = Response::builder()
+    let mut response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/octet-stream")
         .body(body)
         .map_err(|err| ApiError::Internal(format!("failed to build response: {err}")))?;
+    response.headers_mut().insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_str(&format!("attachment; filename=\"{}.tgz\"", entry_id))
+            .map_err(|err| ApiError::Internal(format!("invalid header value: {err}")))?,
+    );
     Ok(response)
 }

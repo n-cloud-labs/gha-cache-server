@@ -69,8 +69,11 @@ pub(crate) fn build_router_with_proxy(
             post(upload::commit_cache),
         )
         // ===== Extra routes you asked =====
-        // 1) GET /download/{random}/{filename}
-        .route("/download/:random/:filename", get(download::download_proxy))
+        // 1) GET /download/{cache_key}/{filename}
+        .route(
+            "/download/:cache_key/:filename",
+            get(download::download_proxy),
+        )
         // 2) TWIRP endpoints
         .route(
             "/twirp/github.actions.results.api.v1.CacheService/CreateCacheEntry",
