@@ -50,10 +50,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: 'true'
+      - name: Install required packages
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client protobuf-compiler
       - name: Install sqlx-cli
         run: cargo install sqlx-cli --no-default-features --features native-tls,postgres,mysql,sqlite
-      - name: Install required packages
-        run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - name: Prepare database
         run: |
           sqlx database create
@@ -89,10 +89,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: 'true'
+      - name: Install required packages
+        run: sudo apt-get update && sudo apt-get install -y default-mysql-client protobuf-compiler
       - name: Install sqlx-cli
         run: cargo install sqlx-cli --no-default-features --features native-tls,postgres,mysql,sqlite
-      - name: Install required packages
-        run: sudo apt-get update && sudo apt-get install -y default-mysql-client
       - name: Prepare database
         run: |
           sqlx database create
@@ -116,6 +116,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: 'true'
+      - name: Install required packages
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - name: Install sqlx-cli
         run: cargo install sqlx-cli --no-default-features --features native-tls,postgres,mysql,sqlite
       - name: Prepare database

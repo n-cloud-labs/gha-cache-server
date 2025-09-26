@@ -6,7 +6,7 @@ arch=('x86_64' 'aarch64')
 url="https://github.com/n-cloud-labs/gha-cache-server"
 license=('MIT')
 depends=('gcc-libs' 'glibc' 'systemd')
-makedepends=('cargo' 'clang' 'pkgconf')
+makedepends=('cargo' 'clang' 'pkgconf' 'protobuf')
 source=("https://github.com/n-cloud-labs/gha-cache-server/archive/refs/tags/v${pkgver}.tar.gz"
         "gha-cache-server.service"
         "gha-cache-server.sysusers"
