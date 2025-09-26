@@ -21,6 +21,10 @@ concurrency:
   cancel-in-progress: true
   group: ${{ github.workflow }}-${{ github.ref }}
 
+env:
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: true
+
 jobs:
   check-postgres:
     runs-on: ubuntu-24.04
@@ -50,8 +54,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: 'true'
-      - name: Install required packages
-        run: sudo apt-get update && sudo apt-get install -y postgresql-client protobuf-compiler
+      - name: Install required packages and sccache
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client protobuf-compiler sccache
       - name: Install sqlx-cli
         run: cargo install sqlx-cli --no-default-features --features native-tls,postgres,mysql,sqlite
       - name: Prepare database
@@ -89,8 +93,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: 'true'
-      - name: Install required packages
-        run: sudo apt-get update && sudo apt-get install -y default-mysql-client protobuf-compiler
+      - name: Install required packages and sccache
+        run: sudo apt-get update && sudo apt-get install -y default-mysql-client protobuf-compiler sccache
       - name: Install sqlx-cli
         run: cargo install sqlx-cli --no-default-features --features native-tls,postgres,mysql,sqlite
       - name: Prepare database
@@ -116,8 +120,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: 'true'
-      - name: Install required packages
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install required packages and sccache
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler sccache
       - name: Install sqlx-cli
         run: cargo install sqlx-cli --no-default-features --features native-tls,postgres,mysql,sqlite
       - name: Prepare database

@@ -21,11 +21,17 @@ concurrency:
   cancel-in-progress: true
   group: ${{ github.workflow }}-${{ github.ref }}
 
+env:
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: true
+
 jobs:
   check-format:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
+      - name: Install sccache
+        run: sudo apt-get update && sudo apt-get install -y sccache
       - name: Install Rust toolchain
         run: |-
           command -v rustup || ( curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --component rustfmt )
