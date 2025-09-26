@@ -27,6 +27,10 @@ fn build_upload_url(id: Uuid) -> String {
     format!("/upload/{id}")
 }
 
+fn build_download_url(id: Uuid) -> String {
+    format!("/download/{id}/cache.tgz")
+}
+
 fn unique_keys(primary: String, restores: &[String]) -> Vec<String> {
     let mut result = Vec::with_capacity(restores.len() + 1);
     result.push(primary);
@@ -292,21 +296,32 @@ pub async fn get_cache_entry_download_url(
                 .await?
         {
             meta::touch_entry(&st.pool, st.database_driver, entry.id).await?;
-            let pres = st
-                .store
-                .presign_get(&entry.storage_key, Duration::from_secs(3600))
-                .await
-                .map_err(|e| ApiError::S3(format!("{e}")))?;
-            if let Some(url) = pres {
-                return Ok(TwirpResponse::new(
-                    TwirpGetUrlResp {
-                        ok: true,
-                        signed_download_url: url.url.to_string(),
-                        matched_key: candidate,
-                    },
-                    format,
-                ));
+            if st.enable_direct {
+                let pres = st
+                    .store
+                    .presign_get(&entry.storage_key, Duration::from_secs(3600))
+                    .await
+                    .map_err(|e| ApiError::S3(format!("{e}")))?;
+                if let Some(url) = pres {
+                    return Ok(TwirpResponse::new(
+                        TwirpGetUrlResp {
+                            ok: true,
+                            signed_download_url: url.url.to_string(),
+                            matched_key: candidate,
+                        },
+                        format,
+                    ));
+                }
             }
+
+            return Ok(TwirpResponse::new(
+                TwirpGetUrlResp {
+                    ok: true,
+                    signed_download_url: build_download_url(entry.id),
+                    matched_key: candidate,
+                },
+                format,
+            ));
         }
     }
 

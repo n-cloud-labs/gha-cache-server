@@ -3,10 +3,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use axum::{
-    extract::{Path, Query, State},
-    response::IntoResponse,
-};
+use axum::extract::{Path, Query, State};
+use bytes::Bytes;
+use futures::stream;
 use gha_cache_server::api::proto::cache;
 use gha_cache_server::api::proxy::ProxyHttpClient;
 use gha_cache_server::api::twirp::TwirpRequest;
@@ -15,23 +14,36 @@ use gha_cache_server::api::{download, twirp, upload};
 use gha_cache_server::config::DatabaseDriver;
 use gha_cache_server::http::AppState;
 use gha_cache_server::meta::{self, CacheEntry};
-use gha_cache_server::storage::{BlobStore, PresignedUrl};
+use gha_cache_server::storage::{BlobDownloadStream, BlobStore, PresignedUrl};
 use http::Request;
+use http_body_util::BodyExt;
 use sqlx::AnyPool;
 use sqlx::any::AnyPoolOptions;
 use url::Url;
 use uuid::Uuid;
 
 const TEST_VERSION: &str = "v1";
+const TEST_URL: &str = "https://example.com/archive.tgz";
 
 struct TestStore {
     url: Url,
+    body: Bytes,
+    presign: bool,
 }
 
 impl TestStore {
     fn new(url: &str) -> Self {
         Self {
             url: Url::parse(url).expect("url"),
+            body: Bytes::from_static(b"payload"),
+            presign: true,
+        }
+    }
+
+    fn without_presign(url: &str) -> Self {
+        Self {
+            presign: false,
+            ..Self::new(url)
         }
     }
 }
@@ -66,9 +78,19 @@ impl BlobStore for TestStore {
         _key: &str,
         _ttl: Duration,
     ) -> anyhow::Result<Option<PresignedUrl>> {
-        Ok(Some(PresignedUrl {
-            url: self.url.clone(),
-        }))
+        if self.presign {
+            Ok(Some(PresignedUrl {
+                url: self.url.clone(),
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn get(&self, _key: &str) -> anyhow::Result<Option<BlobDownloadStream>> {
+        let body = self.body.clone();
+        let stream = stream::once(async move { Ok::<Bytes, anyhow::Error>(body) });
+        Ok(Some(Box::pin(stream)))
     }
 
     async fn delete(&self, _key: &str) -> anyhow::Result<()> {
@@ -135,11 +157,11 @@ async fn fetch_last_access(pool: &AnyPool, id: Uuid) -> i64 {
         .expect("fetch last access")
 }
 
-fn build_state(pool: AnyPool) -> AppState {
+fn build_state(pool: AnyPool, store: TestStore, enable_direct: bool) -> AppState {
     AppState {
         pool,
-        store: Arc::new(TestStore::new("https://example.com/archive.tgz")),
-        enable_direct: true,
+        store: Arc::new(store),
+        enable_direct,
         proxy_client: Arc::new(DummyProxyClient),
         database_driver: DatabaseDriver::Sqlite,
     }
@@ -165,7 +187,7 @@ async fn get_cache_entry_updates_last_access() {
     let entry = create_entry(&pool).await;
     set_last_access(&pool, entry.id, 1).await;
 
-    let state = build_state(pool.clone());
+    let state = build_state(pool.clone(), TestStore::new(TEST_URL), true);
     let mut query_params = HashMap::new();
     query_params.insert("keys".to_string(), entry.key.clone());
     query_params.insert("version".to_string(), entry.version.clone());
@@ -184,7 +206,7 @@ async fn twirp_download_url_updates_last_access() {
     let entry = create_entry(&pool).await;
     set_last_access(&pool, entry.id, 2).await;
 
-    let state = build_state(pool.clone());
+    let state = build_state(pool.clone(), TestStore::new(TEST_URL), true);
     let request = TwirpGetUrlReq {
         metadata: None,
         key: entry.key.clone(),
@@ -208,15 +230,15 @@ async fn download_proxy_updates_last_access() {
     let entry = create_entry(&pool).await;
     set_last_access(&pool, entry.id, 3).await;
 
-    let state = build_state(pool.clone());
-    let redirect = download::download_proxy(
+    let state = build_state(pool.clone(), TestStore::new(TEST_URL), true);
+    let response = download::download_proxy(
         State(state),
         Path((entry.id.to_string(), "cache.tgz".to_string())),
     )
     .await
     .expect("download redirect");
 
-    let response = redirect.into_response();
+    assert_eq!(response.status(), http::StatusCode::TEMPORARY_REDIRECT);
     let location = response
         .headers()
         .get(http::header::LOCATION)
@@ -225,4 +247,29 @@ async fn download_proxy_updates_last_access() {
 
     let updated = fetch_last_access(&pool, entry.id).await;
     assert!(updated > 3);
+}
+
+#[tokio::test]
+async fn download_proxy_streams_when_direct_disabled() {
+    let pool = setup_pool().await;
+    let entry = create_entry(&pool).await;
+    set_last_access(&pool, entry.id, 4).await;
+
+    let state = build_state(pool.clone(), TestStore::without_presign(TEST_URL), false);
+    let response = download::download_proxy(
+        State(state),
+        Path((entry.id.to_string(), "cache.tgz".to_string())),
+    )
+    .await
+    .expect("streaming download");
+
+    assert_eq!(response.status(), http::StatusCode::OK);
+    let bytes = BodyExt::collect(response.into_body())
+        .await
+        .expect("collect body")
+        .to_bytes();
+    assert_eq!(bytes, Bytes::from_static(b"payload"));
+
+    let updated = fetch_last_access(&pool, entry.id).await;
+    assert!(updated > 4);
 }

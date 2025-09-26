@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use futures::StreamExt;
+use futures::{StreamExt, stream};
 use google_cloud_auth::credentials::Credentials;
 use google_cloud_auth::credentials::service_account;
 use google_cloud_gax::error::rpc::Code;
@@ -24,7 +24,7 @@ use tokio::sync::Mutex;
 use url::Url;
 
 use crate::config::{GcsConfig, ServiceAccountKeyConfig};
-use crate::storage::{BlobStore, BlobUploadPayload, PresignedUrl};
+use crate::storage::{BlobDownloadStream, BlobStore, BlobUploadPayload, PresignedUrl};
 
 const UPLOAD_PREFIX: &str = ".gha-cache/uploads";
 const MAX_COMPOSE_COMPONENTS: usize = 32;
@@ -261,6 +261,36 @@ impl BlobStore for GcsStore {
             .signer
             .sign(&self.base_url, &self.bucket_name, key, ttl)?;
         Ok(Some(PresignedUrl { url }))
+    }
+
+    async fn get(&self, key: &str) -> Result<Option<BlobDownloadStream>> {
+        match self
+            .storage
+            .read_object(self.bucket_resource.clone(), key.to_string())
+            .send()
+            .await
+        {
+            Ok(response) => {
+                let stream = stream::unfold(Some(response), |state| async move {
+                    let mut resp = match state {
+                        Some(resp) => resp,
+                        None => return None,
+                    };
+                    match resp.next().await {
+                        Some(Ok(chunk)) => Some((Ok(chunk), Some(resp))),
+                        Some(Err(err)) => Some((Err(err.into()), None)),
+                        None => None,
+                    }
+                });
+                Ok(Some(Box::pin(stream)))
+            }
+            Err(err) => {
+                if err.http_status_code() == Some(404) {
+                    return Ok(None);
+                }
+                Err(err.into())
+            }
+        }
     }
 
     async fn delete(&self, key: &str) -> Result<()> {

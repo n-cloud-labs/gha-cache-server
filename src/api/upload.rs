@@ -390,7 +390,7 @@ pub async fn commit_cache(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{BlobStore, BlobUploadPayload, PresignedUrl};
+    use crate::storage::{BlobDownloadStream, BlobStore, BlobUploadPayload, PresignedUrl};
     use async_trait::async_trait;
     use std::sync::{
         Arc,
@@ -451,6 +451,10 @@ mod tests {
             Ok(self.url.as_ref().map(|u| PresignedUrl {
                 url: Url::parse(u).unwrap(),
             }))
+        }
+
+        async fn get(&self, _key: &str) -> anyhow::Result<Option<BlobDownloadStream>> {
+            Ok(None)
         }
 
         async fn delete(&self, _key: &str) -> anyhow::Result<()> {

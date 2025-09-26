@@ -1,6 +1,8 @@
 use axum::{
+    body::Body,
     extract::{Path, State},
-    response::Redirect,
+    http::{StatusCode, header},
+    response::{IntoResponse, Redirect, Response},
 };
 use sqlx::Row;
 use std::time::Duration;
@@ -16,10 +18,7 @@ use crate::meta;
 pub async fn download_proxy(
     State(st): State<AppState>,
     Path((random, _filename)): Path<(String, String)>,
-) -> Result<Redirect> {
-    if !st.enable_direct {
-        return Err(ApiError::BadRequest("direct downloads disabled".into()));
-    }
+) -> Result<Response> {
     let entry_id =
         Uuid::parse_str(&random).map_err(|_| ApiError::BadRequest("invalid cache id".into()))?;
     let query = rewrite_placeholders(
@@ -33,13 +32,29 @@ pub async fn download_proxy(
     let row = rec.ok_or(ApiError::NotFound)?;
     let storage_key: String = row.try_get("storage_key")?;
     meta::touch_entry(&st.pool, st.database_driver, entry_id).await?;
-    let pres = st
+    if st.enable_direct {
+        let pres = st
+            .store
+            .presign_get(&storage_key, Duration::from_secs(3600))
+            .await
+            .map_err(|e| ApiError::S3(format!("{e}")))?;
+        if let Some(p) = pres {
+            return Ok(Redirect::temporary(p.url.as_str()).into_response());
+        }
+    }
+    let stream = st
         .store
-        .presign_get(&storage_key, Duration::from_secs(3600))
+        .get(&storage_key)
         .await
         .map_err(|e| ApiError::S3(format!("{e}")))?;
-    if let Some(p) = pres {
-        return Ok(Redirect::temporary(p.url.as_str()));
-    }
-    Err(ApiError::NotFound)
+    let Some(stream) = stream else {
+        return Err(ApiError::NotFound);
+    };
+    let body = Body::from_stream(stream);
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .body(body)
+        .map_err(|err| ApiError::Internal(format!("failed to build response: {err}")))?;
+    Ok(response)
 }

@@ -85,10 +85,14 @@ Response on success:
 ```json
 {
   "ok": true,
-  "signed_download_url": "https://...",
+  "signed_download_url": "/download/<cache-id>/cache.tgz",
   "matched_key": "primary"
 }
 ```
+
+When direct downloads are enabled and the backing blob store can issue
+presigned URLs, the `signed_download_url` field instead contains the direct
+link to the object.
 
 The handler evaluates `key` followed by the optional `restore_keys` array until
 it finds a cache entry with the matching version. When nothing matches the
