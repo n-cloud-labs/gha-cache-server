@@ -1,12 +1,90 @@
+use serde::de::{Deserializer, Error as DeError, Visitor};
 use serde::{Deserialize, Serialize};
+use std::convert::TryFrom;
+use std::fmt;
 use uuid::Uuid;
 
 use crate::api::proto::cache;
 use crate::error::ApiError;
 
+fn deserialize_i64_from_string_or_number<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct I64Visitor;
+
+    impl<'de> Visitor<'de> for I64Visitor {
+        type Value = i64;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("an integer or a string containing an integer")
+        }
+
+        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+            Ok(value)
+        }
+
+        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+        where
+            E: DeError,
+        {
+            i64::try_from(value).map_err(|_| E::custom("integer overflow"))
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: DeError,
+        {
+            value
+                .parse::<i64>()
+                .map_err(|_| E::custom("invalid integer string"))
+        }
+
+        fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+        where
+            E: DeError,
+        {
+            self.visit_str(&value)
+        }
+    }
+
+    deserializer.deserialize_any(I64Visitor)
+}
+
+fn deserialize_option_i64_from_string_or_number<'de, D>(
+    deserializer: D,
+) -> Result<Option<i64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct OptionVisitor;
+
+    impl<'de> Visitor<'de> for OptionVisitor {
+        type Value = Option<i64>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("an integer, string containing an integer, or null")
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            deserialize_i64_from_string_or_number(deserializer).map(Some)
+        }
+    }
+
+    deserializer.deserialize_option(OptionVisitor)
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct TwirpCacheScope {
     pub scope: String,
+    #[serde(deserialize_with = "deserialize_i64_from_string_or_number")]
     pub permission: i64,
 }
 
@@ -30,7 +108,10 @@ impl From<TwirpCacheScope> for cache::CacheScope {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct TwirpCacheMetadata {
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_option_i64_from_string_or_number"
+    )]
     pub repository_id: Option<i64>,
     #[serde(default)]
     pub scope: Vec<TwirpCacheScope>,
@@ -103,7 +184,10 @@ pub struct TwirpFinalizeReq {
     pub metadata: Option<TwirpCacheMetadata>,
     pub key: String,
     #[allow(dead_code)]
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_option_i64_from_string_or_number"
+    )]
     pub size_bytes: Option<i64>,
     pub version: String,
 }
@@ -206,5 +290,27 @@ mod tests {
         let uuid = Uuid::parse_str("8c7bfc6b-3b8e-4f71-80c2-19ecc2dc2d1f").unwrap();
         let numeric = uuid_to_i64(&uuid.to_string());
         assert_ne!(numeric, 0);
+    }
+
+    #[test]
+    fn twirp_cache_scope_accepts_numeric_string_permission() {
+        let json = r#"{"scope":"repo","permission":"42"}"#;
+        let scope: TwirpCacheScope = serde_json::from_str(json).expect("deserialize scope");
+        assert_eq!(scope.permission, 42);
+    }
+
+    #[test]
+    fn metadata_accepts_string_repository_id() {
+        let json = r#"{"repository_id":"123","scope":[]}"#;
+        let metadata: TwirpCacheMetadata =
+            serde_json::from_str(json).expect("deserialize metadata");
+        assert_eq!(metadata.repository_id, Some(123));
+    }
+
+    #[test]
+    fn finalize_request_accepts_string_size_bytes() {
+        let json = r#"{"metadata":null,"key":"key","size_bytes":"2048","version":"v1"}"#;
+        let req: TwirpFinalizeReq = serde_json::from_str(json).expect("deserialize finalize");
+        assert_eq!(req.size_bytes, Some(2048));
     }
 }
