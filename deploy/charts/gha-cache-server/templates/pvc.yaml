@@ -17,23 +17,3 @@ spec:
   storageClassName: {{ . }}
   {{- end }}
 {{- end }}
-{{- if and .Values.fsBackend.enabled .Values.fsBackend.uploads.enabled (not .Values.fsBackend.uploads.existingClaim) }}
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ include "gha-cache-server.fullname" . }}-fs-uploads
-  labels:
-    {{- include "gha-cache-server.labels" . | nindent 4 }}
-spec:
-  accessModes:
-    {{- range .Values.fsBackend.uploads.accessModes }}
-    - {{ . }}
-    {{- end }}
-  resources:
-    requests:
-      storage: {{ .Values.fsBackend.uploads.size }}
-  {{- with .Values.fsBackend.uploads.storageClassName }}
-  storageClassName: {{ . }}
-  {{- end }}
-{{- end }}
