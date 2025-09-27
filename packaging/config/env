@@ -28,6 +28,7 @@ BLOB_STORE=fs
 
 # Filesystem backend configuration.
 #FS_ROOT=/var/lib/gha-cache-server/blobs
+#FS_UPLOAD_ROOT=/var/lib/gha-cache-uploads
 #FS_FILE_MODE=0640
 #FS_DIR_MODE=0750
 

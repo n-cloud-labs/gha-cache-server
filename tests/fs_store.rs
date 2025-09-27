@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -18,7 +19,7 @@ fn payload_from_bytes(chunks: Vec<&'static [u8]>) -> BlobUploadPayload {
 #[tokio::test]
 async fn multipart_upload_writes_file() -> Result<()> {
     let temp = TempDir::new()?;
-    let store = FsStore::new(PathBuf::from(temp.path()), None, None).await?;
+    let store = FsStore::new(PathBuf::from(temp.path()), None, None, None).await?;
     let key = "artifacts/demo/cache.tgz";
 
     let upload_id = store.create_multipart(key).await?;
@@ -41,7 +42,18 @@ async fn multipart_upload_writes_file() -> Result<()> {
     let contents = tokio::fs::read(&final_path).await?;
     assert_eq!(contents, b"hello world from fs store");
 
-    let uploads_dir = temp.path().join(".uploads").join(&upload_id);
+    let root = PathBuf::from(temp.path());
+    let uploads_root = if let Some(parent) = root.parent() {
+        let mut dir_name = OsString::from(".gha-cache-uploads");
+        if let Some(name) = root.file_name() {
+            dir_name.push("-");
+            dir_name.push(name);
+        }
+        parent.join(dir_name)
+    } else {
+        root.join(".gha-cache-uploads")
+    };
+    let uploads_dir = uploads_root.join(&upload_id);
     assert!(
         !uploads_dir.exists(),
         "temporary upload directory should be cleaned up"
@@ -60,7 +72,7 @@ async fn respects_configured_permissions() -> Result<()> {
     let file_mode = 0o640;
     let dir_mode = 0o750;
 
-    let store = FsStore::new(root.clone(), Some(file_mode), Some(dir_mode)).await?;
+    let store = FsStore::new(root.clone(), None, Some(file_mode), Some(dir_mode)).await?;
     let key = "caches/example.bin";
 
     let upload_id = store.create_multipart(key).await?;
@@ -82,7 +94,7 @@ async fn respects_configured_permissions() -> Result<()> {
 #[tokio::test]
 async fn delete_removes_file_and_empty_directories() -> Result<()> {
     let temp = TempDir::new()?;
-    let store = FsStore::new(PathBuf::from(temp.path()), None, None).await?;
+    let store = FsStore::new(PathBuf::from(temp.path()), None, None, None).await?;
     let key = "nested/path/cache.bin";
 
     let upload_id = store.create_multipart(key).await?;
@@ -113,7 +125,7 @@ async fn delete_removes_file_and_empty_directories() -> Result<()> {
 #[tokio::test]
 async fn delete_is_idempotent_and_preserves_non_empty_dirs() -> Result<()> {
     let temp = TempDir::new()?;
-    let store = FsStore::new(PathBuf::from(temp.path()), None, None).await?;
+    let store = FsStore::new(PathBuf::from(temp.path()), None, None, None).await?;
     let key = "keep/nested/cache.bin";
 
     let upload_id = store.create_multipart(key).await?;

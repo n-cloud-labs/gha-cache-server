@@ -95,7 +95,15 @@ async fn main() -> anyhow::Result<()> {
                 .fs
                 .as_ref()
                 .context("missing filesystem configuration for selected backend")?;
-            Arc::new(FsStore::new(fs_cfg.root.clone(), fs_cfg.file_mode, fs_cfg.dir_mode).await?)
+            Arc::new(
+                FsStore::new(
+                    fs_cfg.root.clone(),
+                    fs_cfg.uploads_root.clone(),
+                    fs_cfg.file_mode,
+                    fs_cfg.dir_mode,
+                )
+                .await?,
+            )
         }
         BlobStoreSelector::Gcs => {
             let gcs_cfg = cfg

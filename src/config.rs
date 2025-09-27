@@ -35,6 +35,7 @@ pub struct S3Config {
 #[derive(Clone)]
 pub struct FsConfig {
     pub root: PathBuf,
+    pub uploads_root: Option<PathBuf>,
     pub file_mode: Option<u32>,
     pub dir_mode: Option<u32>,
 }
@@ -151,8 +152,10 @@ impl Config {
             let root = std::env::var("FS_ROOT")
                 .context("FS_ROOT is required when BLOB_STORE=fs")?
                 .into();
+            let uploads_root = std::env::var("FS_UPLOAD_ROOT").ok().map(Into::into);
             Some(FsConfig {
                 root,
+                uploads_root,
                 file_mode: parse_mode("FS_FILE_MODE")?,
                 dir_mode: parse_mode("FS_DIR_MODE")?,
             })

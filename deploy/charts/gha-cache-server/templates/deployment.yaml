@@ -75,9 +75,20 @@ spec:
           envFrom:
             {{- toYaml $envFrom | nindent 12 }}
           {{- end }}
-          {{- with .Values.env.extra }}
+          {{- $uploadRoot := .Values.fsBackend.uploadRoot -}}
+          {{- if and .Values.fsBackend.uploads.enabled (or (eq $uploadRoot nil) (eq $uploadRoot "")) -}}
+          {{- $uploadRoot = .Values.fsBackend.uploads.mountPath -}}
+          {{- end -}}
+          {{- $env := list -}}
+          {{- if and .Values.fsBackend.enabled $uploadRoot -}}
+          {{- $env = append $env (dict "name" "FS_UPLOAD_ROOT" "value" $uploadRoot) -}}
+          {{- end -}}
+          {{- range .Values.env.extra -}}
+          {{- $env = append $env . -}}
+          {{- end -}}
+          {{- if $env }}
           env:
-            {{- toYaml . | nindent 12 }}
+            {{- toYaml $env | nindent 12 }}
           {{- end }}
           {{- with .Values.securityContext }}
           securityContext:
@@ -99,6 +110,10 @@ spec:
           volumeMounts:
             - name: storage
               mountPath: {{ .Values.fsBackend.mountPath }}
+            {{- if .Values.fsBackend.uploads.enabled }}
+            - name: uploads
+              mountPath: {{ .Values.fsBackend.uploads.mountPath }}
+            {{- end }}
           {{- end }}
       {{- if .Values.fsBackend.enabled }}
       volumes:
@@ -110,6 +125,16 @@ spec:
           persistentVolumeClaim:
             claimName: {{ include "gha-cache-server.fullname" . }}-fs
           {{- end }}
+        {{- if .Values.fsBackend.uploads.enabled }}
+        - name: uploads
+          {{- if .Values.fsBackend.uploads.existingClaim }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.fsBackend.uploads.existingClaim }}
+          {{- else }}
+          persistentVolumeClaim:
+            claimName: {{ include "gha-cache-server.fullname" . }}-fs-uploads
+          {{- end }}
+        {{- end }}
       {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

@@ -79,7 +79,7 @@ async fn cleanup_removes_expired_entries_and_files() {
     let pool = setup_pool().await;
     let temp_dir = TempDir::new().expect("temp dir");
     let store = Arc::new(
-        FsStore::new(temp_dir.path().to_path_buf(), None, None)
+        FsStore::new(temp_dir.path().to_path_buf(), None, None, None)
             .await
             .expect("create store"),
     );
@@ -127,7 +127,7 @@ async fn cleanup_enforces_size_limit() {
     let pool = setup_pool().await;
     let temp_dir = TempDir::new().expect("temp dir");
     let store = Arc::new(
-        FsStore::new(temp_dir.path().to_path_buf(), None, None)
+        FsStore::new(temp_dir.path().to_path_buf(), None, None, None)
             .await
             .expect("create store"),
     );
