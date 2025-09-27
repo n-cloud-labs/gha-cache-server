@@ -393,6 +393,7 @@ pub async fn get_parts(
     driver: DatabaseDriver,
     upload_id: &str,
 ) -> Result<Vec<(i32, String)>, sqlx::Error> {
-    let parts = fetch_parts(pool, driver, upload_id).await?;
+    let mut parts = fetch_parts(pool, driver, upload_id).await?;
+    parts.sort_by_key(|part| part.part_number);
     Ok(parts.into_iter().map(|p| (p.part_number, p.etag)).collect())
 }
