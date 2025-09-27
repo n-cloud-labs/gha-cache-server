@@ -1,11 +1,13 @@
 use std::sync::Arc;
 
+use anyhow::Context;
 use chrono::Utc;
 use sqlx::AnyPool;
 use tokio::time::{MissedTickBehavior, interval};
 use tracing::{debug, error, info, warn};
 
 use crate::config::{CleanupSettings, DatabaseDriver};
+use crate::db::rewrite_placeholders;
 use crate::meta::{self, CacheEntry};
 use crate::storage::BlobStore;
 
@@ -40,8 +42,18 @@ async fn run_iteration(
         info!(count = expired.len(), "removing expired cache entries");
     }
     for entry in expired {
-        if remove_entry(pool, driver, store.clone(), &entry).await {
-            debug!(entry_id = %entry.id, "deleted expired cache entry");
+        match purge_entry(&store, pool, driver, &entry).await {
+            Ok(()) => {
+                debug!(entry_id = %entry.id, "deleted expired cache entry");
+            }
+            Err(err) => {
+                error!(
+                    entry_id = %entry.id,
+                    storage_key = %entry.storage_key,
+                    ?err,
+                    "failed to delete expired cache entry"
+                );
+            }
         }
     }
 
@@ -55,10 +67,26 @@ async fn run_iteration(
                     break;
                 }
 
-                if remove_entry(pool, driver, store.clone(), &entry).await {
-                    let size = clamp_size(entry.size_bytes);
-                    usage = usage.saturating_sub(size);
-                    debug!(entry_id = %entry.id, size, usage, limit, "deleted entry to reclaim space");
+                match purge_entry(&store, pool, driver, &entry).await {
+                    Ok(()) => {
+                        let size = clamp_size(entry.size_bytes);
+                        usage = usage.saturating_sub(size);
+                        debug!(
+                            entry_id = %entry.id,
+                            size,
+                            usage,
+                            limit,
+                            "deleted entry to reclaim space"
+                        );
+                    }
+                    Err(err) => {
+                        error!(
+                            entry_id = %entry.id,
+                            storage_key = %entry.storage_key,
+                            ?err,
+                            "failed to delete cache entry during cleanup"
+                        );
+                    }
                 }
             }
 
@@ -74,25 +102,41 @@ async fn run_iteration(
     Ok(())
 }
 
-async fn remove_entry(
+async fn purge_entry(
+    store: &Arc<dyn BlobStore>,
     pool: &AnyPool,
     driver: DatabaseDriver,
-    store: Arc<dyn BlobStore>,
     entry: &CacheEntry,
-) -> bool {
-    if let Err(err) = store.delete(&entry.storage_key).await {
-        error!(entry_id = %entry.id, storage_key = %entry.storage_key, ?err, "failed to delete blob");
-        return false;
-    }
-
-    if let Err(err) = meta::delete_entry(pool, driver, entry.id).await {
-        error!(entry_id = %entry.id, ?err, "failed to delete cache entry metadata");
-        return false;
-    }
-
-    true
+) -> anyhow::Result<()> {
+    store
+        .delete(&entry.storage_key)
+        .await
+        .with_context(|| format!("failed to delete blob {}", entry.storage_key))?;
+    meta::delete_entry(pool, driver, entry.id)
+        .await
+        .with_context(|| format!("failed to delete metadata for entry {}", entry.id))?;
+    Ok(())
 }
 
 fn clamp_size(value: i64) -> u64 {
     if value < 0 { 0 } else { value as u64 }
+}
+
+pub async fn delete_all_caches(
+    pool: &AnyPool,
+    driver: DatabaseDriver,
+    store: Arc<dyn BlobStore>,
+) -> anyhow::Result<usize> {
+    let entries = meta::list_entries_ordered(pool, driver, None).await?;
+    let mut deleted = 0usize;
+
+    for entry in entries {
+        purge_entry(&store, pool, driver, &entry).await?;
+        deleted += 1;
+    }
+
+    let query = rewrite_placeholders("DELETE FROM cache_uploads", driver);
+    sqlx::query(&query).execute(pool).await?;
+
+    Ok(deleted)
 }
