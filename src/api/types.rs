@@ -213,29 +213,20 @@ impl TryFrom<cache::FinalizeCacheEntryUploadRequest> for TwirpFinalizeReq {
 #[derive(Clone, Debug, Serialize)]
 pub struct TwirpFinalizeResp {
     pub ok: bool,
-    pub entry_id: String,
+    pub entry_id: i64,
 }
 
-fn uuid_to_i64(value: &str) -> i64 {
-    Uuid::parse_str(value)
-        .map(|uuid| {
-            let bytes = uuid.into_bytes();
-            let mut buf = [0_u8; 8];
-            buf.copy_from_slice(&bytes[0..8]);
-            i64::from_be_bytes(buf)
-        })
-        .unwrap_or_default()
+pub(crate) fn uuid_to_i64(uuid: Uuid) -> i64 {
+    let mut buf = [0_u8; 8];
+    buf.copy_from_slice(&uuid.into_bytes()[0..8]);
+    i64::from_be_bytes(buf)
 }
 
 impl From<TwirpFinalizeResp> for cache::FinalizeCacheEntryUploadResponse {
     fn from(value: TwirpFinalizeResp) -> Self {
-        let entry_id = match value.entry_id.parse::<i64>() {
-            Ok(id) => id,
-            Err(_) => uuid_to_i64(&value.entry_id),
-        };
         Self {
             ok: value.ok,
-            entry_id,
+            entry_id: value.entry_id,
         }
     }
 }
@@ -288,7 +279,7 @@ mod tests {
     #[test]
     fn uuid_conversion_is_stable() {
         let uuid = Uuid::parse_str("8c7bfc6b-3b8e-4f71-80c2-19ecc2dc2d1f").unwrap();
-        let numeric = uuid_to_i64(&uuid.to_string());
+        let numeric = uuid_to_i64(uuid);
         assert_ne!(numeric, 0);
     }
 

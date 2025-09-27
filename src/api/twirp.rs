@@ -300,7 +300,7 @@ pub async fn finalize_cache_entry_upload(
         return Ok(TwirpResponse::new(
             TwirpFinalizeResp {
                 ok: false,
-                entry_id: String::new(),
+                entry_id: 0,
             },
             format,
         ));
@@ -324,7 +324,7 @@ pub async fn finalize_cache_entry_upload(
     Ok(TwirpResponse::new(
         TwirpFinalizeResp {
             ok: true,
-            entry_id: entry.id.to_string(),
+            entry_id: uuid_to_i64(entry.id),
         },
         format,
     ))
