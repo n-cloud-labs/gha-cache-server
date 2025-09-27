@@ -9,7 +9,7 @@ mod obs;
 mod storage;
 
 use axum::Router;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use sqlx::{
     AnyPool,
     any::{AnyPoolOptions, install_default_drivers},
@@ -32,6 +32,15 @@ struct Cli {
     /// Run migrations and exit
     #[arg(long)]
     migrate_only: bool,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Delete all cache entries and their stored blobs
+    DeleteAllCaches,
 }
 
 #[tokio::main]
@@ -96,6 +105,12 @@ async fn main() -> anyhow::Result<()> {
             Arc::new(GcsStore::new(gcs_cfg.clone()).await?)
         }
     };
+
+    if let Some(Command::DeleteAllCaches) = cli.command {
+        let deleted = cleanup::delete_all_caches(&pool, cfg.database_driver, store.clone()).await?;
+        tracing::info!(entries = deleted, "deleted all cache entries");
+        return Ok(());
+    }
 
     // Router
     let app: Router = build_router(pool.clone(), store.clone(), &cfg);

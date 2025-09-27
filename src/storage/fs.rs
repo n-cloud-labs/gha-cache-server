@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
@@ -17,6 +18,7 @@ use crate::storage::{BlobDownloadStream, BlobStore, BlobUploadPayload, Presigned
 #[derive(Clone)]
 pub struct FsStore {
     root: PathBuf,
+    uploads_root: PathBuf,
     file_mode: Option<u32>,
     dir_mode: Option<u32>,
 }
@@ -29,8 +31,26 @@ impl FsStore {
                 .with_context(|| format!("failed to create storage root at {}", root.display()))?;
         }
 
+        let canonical_root = fs::canonicalize(&root).await.with_context(|| {
+            format!(
+                "failed to resolve absolute path for storage root at {}",
+                root.display()
+            )
+        })?;
+        let uploads_root = Self::determine_uploads_root(&canonical_root);
+
+        if !uploads_root.as_path().exists() {
+            fs::create_dir_all(&uploads_root).await.with_context(|| {
+                format!(
+                    "failed to create uploads directory at {}",
+                    uploads_root.display()
+                )
+            })?;
+        }
+
         let store = Self {
-            root,
+            root: canonical_root,
+            uploads_root,
             file_mode,
             dir_mode,
         };
@@ -40,25 +60,29 @@ impl FsStore {
             .await
             .context("applying permissions to storage root")?;
 
-        let uploads = store.uploads_root();
-        if !uploads.as_path().exists() {
-            fs::create_dir_all(&uploads).await.with_context(|| {
-                format!(
-                    "failed to create uploads directory at {}",
-                    uploads.display()
-                )
-            })?;
-        }
         store
-            .ensure_dir_mode(&uploads)
+            .ensure_dir_mode(&store.uploads_root)
             .await
             .context("applying permissions to uploads directory")?;
 
         Ok(store)
     }
 
-    fn uploads_root(&self) -> PathBuf {
-        self.root.join(".uploads")
+    fn determine_uploads_root(root: &Path) -> PathBuf {
+        if let Some(parent) = root.parent() {
+            let mut dir_name = OsString::from(".gha-cache-uploads");
+            if let Some(name) = root.file_name() {
+                dir_name.push("-");
+                dir_name.push(name);
+            }
+            parent.join(dir_name)
+        } else {
+            root.join(".gha-cache-uploads")
+        }
+    }
+
+    fn uploads_root(&self) -> &Path {
+        &self.uploads_root
     }
 
     fn upload_dir(&self, upload_id: &str) -> PathBuf {
