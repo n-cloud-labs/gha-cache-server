@@ -17,9 +17,19 @@ spec:
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- with .Values.podAnnotations }}
+      {{- $hasConfigChecksum := and (not .Values.env.existingConfigMap) (gt (len .Values.env.config) 0) }}
+      {{- $hasSecretChecksum := and (not .Values.env.existingSecret) (gt (len .Values.env.secret) 0) }}
+      {{- if or .Values.podAnnotations $hasConfigChecksum $hasSecretChecksum }}
       annotations:
+        {{- if $hasConfigChecksum }}
+        checksum/configmap: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- end }}
+        {{- if $hasSecretChecksum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- end }}
     spec:
       serviceAccountName: {{ include "gha-cache-server.serviceAccountName" . }}
