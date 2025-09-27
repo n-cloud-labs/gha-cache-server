@@ -30,6 +30,13 @@ impl IntoResponse for ApiError {
             ApiError::S3(e) => (StatusCode::BAD_GATEWAY, format!("s3: {}", e)),
             ApiError::Internal(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.clone()),
         };
+
+        if code.is_client_error() {
+            tracing::warn!(status = %code, error = %self, "returning API error response");
+        } else {
+            tracing::error!(status = %code, error = %self, "returning API error response");
+        }
+
         (code, Json(Problem { message: msg })).into_response()
     }
 }
