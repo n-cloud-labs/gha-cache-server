@@ -41,7 +41,7 @@ securityContext: {}
 
 service:
   type: ClusterIP
-  port: 8080
+  port: 80
   annotations: {}
   labels: {}
   loadBalancerIP: ""
@@ -85,7 +85,7 @@ env:
 
 fsBackend:
   enabled: false
-  mountPath: /var/lib/gha-cache
+  mountPath: /var/lib/gha-cache-server
   # When set, the deployment uses the referenced PersistentVolumeClaim instead of creating one.
   existingClaim: ""
   storageClassName: ""
