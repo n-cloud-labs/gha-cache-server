@@ -85,15 +85,15 @@ fsBackend:
   uploads:
     enabled: true
     mountPath: /var/lib/gha-cache-uploads
-    size: 50Gi
+    emptyDir:
+      medium: Memory
 ```
 
 When `uploadRoot` is set (explicitly or via the `.fsBackend.uploads.mountPath`
 default) the chart injects the `FS_UPLOAD_ROOT` environment variable so staged
-multipart uploads land on the desired path. Enabling `.fsBackend.uploads`
-provisions a second PersistentVolumeClaim (or reuses the configured
-`.fsBackend.uploads.existingClaim`) mounted at the chosen location to host the
-staging directory.
+multipart uploads land on the desired path. Enabling `.fsBackend.uploads` mounts
+an ephemeral `emptyDir` volume at the configured `mountPath`, keeping temporary
+uploads outside the persistent cache storage.
 
 Additional POSIX permission settings (such as `FS_FILE_MODE`) should be added to
 `.env.config`. Grant the pod access to the PersistentVolume by enabling `.rbac`

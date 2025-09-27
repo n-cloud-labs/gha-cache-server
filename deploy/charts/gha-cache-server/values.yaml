@@ -96,14 +96,11 @@ fsBackend:
     - ReadWriteOnce
   size: 100Gi
   uploads:
-    enabled: false
+    enabled: true
     mountPath: /var/lib/gha-cache-uploads
-    # When set, the deployment uses the referenced PersistentVolumeClaim instead of creating one.
-    existingClaim: ""
+    accessModes: [ "ReadWriteOnce" ]
     storageClassName: ""
-    accessModes:
-      - ReadWriteOnce
-    size: 50Gi
+    size: 20Gi
 
 nodeSelector: {}
 

@@ -127,13 +127,17 @@ spec:
           {{- end }}
         {{- if .Values.fsBackend.uploads.enabled }}
         - name: uploads
-          {{- if .Values.fsBackend.uploads.existingClaim }}
-          persistentVolumeClaim:
-            claimName: {{ .Values.fsBackend.uploads.existingClaim }}
-          {{- else }}
-          persistentVolumeClaim:
-            claimName: {{ include "gha-cache-server.fullname" . }}-fs-uploads
-          {{- end }}
+          ephemeral:
+            volumeClaimTemplate:
+              metadata:
+                labels:
+                  type: {{ include "gha-cache-server.fullname" . }}-uploads
+              spec:
+                accessModes: {{ .Values.fsBackend.uploads.accessModes }}
+                storageClassName: {{ .Values.fsBackend.uploads.storageClassName|quote }}
+                resources:
+                  requests:
+                    storage: {{ .Values.fsBackend.uploads.size|quote }}
         {{- end }}
       {{- end }}
       {{- with .Values.nodeSelector }}
