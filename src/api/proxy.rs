@@ -113,15 +113,39 @@ pub async fn proxy_unknown(
         .await
         .map_err(|err| ApiError::Internal(format!("proxy request failed: {err}")))?;
 
-    let status = response.status();
-    tracing::info!(
-        method = %method,
-        path = %path_and_query,
-        status = %status,
-        "received proxied response",
-    );
+    let (parts, body) = response.into_parts();
+    let status = parts.status;
 
-    Ok(response)
+    if status.is_client_error() || status.is_server_error() {
+        let collected = body
+            .collect()
+            .await
+            .map_err(|err| ApiError::Internal(format!("failed to read proxied response: {err}")))?;
+
+        let body_bytes = collected.to_bytes();
+        let body_text = String::from_utf8_lossy(&body_bytes);
+
+        tracing::warn!(
+            method = %method,
+            path = %path_and_query,
+            status = %status,
+            body = %body_text,
+            "received proxied error response",
+        );
+
+        let body = Body::from(body_bytes);
+
+        Ok(Response::from_parts(parts, body))
+    } else {
+        tracing::info!(
+            method = %method,
+            path = %path_and_query,
+            status = %status,
+            "received proxied response",
+        );
+
+        Ok(Response::from_parts(parts, body))
+    }
 }
 
 impl fmt::Debug for HyperProxyClient {
