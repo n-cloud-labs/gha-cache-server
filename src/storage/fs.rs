@@ -24,7 +24,12 @@ pub struct FsStore {
 }
 
 impl FsStore {
-    pub async fn new(root: PathBuf, file_mode: Option<u32>, dir_mode: Option<u32>) -> Result<Self> {
+    pub async fn new(
+        root: PathBuf,
+        uploads_root: Option<PathBuf>,
+        file_mode: Option<u32>,
+        dir_mode: Option<u32>,
+    ) -> Result<Self> {
         if !root.as_path().exists() {
             fs::create_dir_all(&root)
                 .await
@@ -37,16 +42,7 @@ impl FsStore {
                 root.display()
             )
         })?;
-        let uploads_root = Self::determine_uploads_root(&canonical_root);
-
-        if !uploads_root.as_path().exists() {
-            fs::create_dir_all(&uploads_root).await.with_context(|| {
-                format!(
-                    "failed to create uploads directory at {}",
-                    uploads_root.display()
-                )
-            })?;
-        }
+        let uploads_root = Self::resolve_uploads_root(&canonical_root, uploads_root).await?;
 
         let store = Self {
             root: canonical_root,
@@ -68,7 +64,35 @@ impl FsStore {
         Ok(store)
     }
 
-    fn determine_uploads_root(root: &Path) -> PathBuf {
+    async fn resolve_uploads_root(
+        canonical_root: &Path,
+        configured: Option<PathBuf>,
+    ) -> Result<PathBuf> {
+        let path = if let Some(path) = configured {
+            if path.is_relative() {
+                canonical_root.join(path)
+            } else {
+                path
+            }
+        } else {
+            Self::default_uploads_root(canonical_root)
+        };
+
+        if !path.as_path().exists() {
+            fs::create_dir_all(&path).await.with_context(|| {
+                format!("failed to create uploads directory at {}", path.display())
+            })?;
+        }
+
+        fs::canonicalize(&path).await.with_context(|| {
+            format!(
+                "failed to resolve absolute path for uploads directory at {}",
+                path.display()
+            )
+        })
+    }
+
+    fn default_uploads_root(root: &Path) -> PathBuf {
         if let Some(parent) = root.parent() {
             let mut dir_name = OsString::from(".gha-cache-uploads");
             if let Some(name) = root.file_name() {

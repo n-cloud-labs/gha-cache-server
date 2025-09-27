@@ -86,12 +86,24 @@ env:
 fsBackend:
   enabled: false
   mountPath: /var/lib/gha-cache-server
+  # Optional staging directory exposed via the FS_UPLOAD_ROOT environment variable.
+  # Defaults to .fsBackend.uploads.mountPath when the uploads volume is enabled.
+  uploadRoot: ""
   # When set, the deployment uses the referenced PersistentVolumeClaim instead of creating one.
   existingClaim: ""
   storageClassName: ""
   accessModes:
     - ReadWriteOnce
   size: 100Gi
+  uploads:
+    enabled: false
+    mountPath: /var/lib/gha-cache-uploads
+    # When set, the deployment uses the referenced PersistentVolumeClaim instead of creating one.
+    existingClaim: ""
+    storageClassName: ""
+    accessModes:
+      - ReadWriteOnce
+    size: 50Gi
 
 nodeSelector: {}
 

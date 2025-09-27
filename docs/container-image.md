@@ -20,6 +20,8 @@ sensible defaults to help local development:
 - `FS_ROOT` – storage path used by the filesystem backend. A persistent volume is
   declared for `/var/lib/gha-cache-server` so that `BLOB_STORE=fs` survives
   container restarts.
+- `FS_UPLOAD_ROOT` – optional staging directory for multipart uploads. Mount an
+  additional volume when the staging area should live on persistent storage.
 - `DATABASE_URL` – connection string for the SQL database. The default assumes a
   Postgres server named `postgres` inside the same Docker Compose project.
 
@@ -50,9 +52,12 @@ services:
     environment:
       BLOB_STORE: fs
       FS_ROOT: /var/lib/gha-cache-server
+      FS_UPLOAD_ROOT: /var/lib/gha-cache-uploads
     volumes:
       - gha-cache-data:/var/lib/gha-cache-server
+      - gha-cache-uploads:/var/lib/gha-cache-uploads
 
 volumes:
   gha-cache-data:
+  gha-cache-uploads:
 ```

@@ -20,9 +20,11 @@ The server supports pluggable blob storage. Select the implementation via the
 
 When `BLOB_STORE=fs` the process reads additional options:
 
-* `FS_ROOT` – absolute or relative path used as the storage root. Multipart
-  uploads are written to a temporary directory under this root and atomically
-  renamed into place when completed.
+* `FS_ROOT` – absolute or relative path used as the storage root. Completed
+  uploads are atomically renamed into place below this directory.
+* `FS_UPLOAD_ROOT` – optional directory used to stage multipart uploads before
+  they are finalized. When unset the server creates a sibling directory next to
+  `FS_ROOT`.
 * `FS_FILE_MODE` – optional octal file permission (for example `0640` or
   `0o640`). When set, the mode is applied to uploaded artifacts.
 * `FS_DIR_MODE` – optional octal directory permission. When provided it is
