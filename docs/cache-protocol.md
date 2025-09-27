@@ -110,12 +110,12 @@ upload by calling:
 Response:
 
 ```json
-{ "ok": true, "entry_id": "uuid" }
+{ "ok": true, "entry_id": 123456789 }
 ```
 
 The lookup is performed against the key/version pair and succeeds when the cache
 entry exists and has an associated upload session. When the lookup fails the
-server returns `ok: false` with an empty identifier.
+server returns `ok: false` with a zero identifier.
 
 ## Database schema
 
