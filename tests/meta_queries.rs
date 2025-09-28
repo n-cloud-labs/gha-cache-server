@@ -241,3 +241,93 @@ async fn concurrent_part_updates_are_ordered() {
     assert_eq!(parts[2].offset, 17);
     assert_eq!(parts[2].size, 3);
 }
+
+#[tokio::test]
+async fn overlapping_part_uploads_hold_state_until_last_part_finishes() {
+    let pool = setup_pool().await;
+    let entry = create_entry(&pool, "overlap").await;
+    let upload_id = Uuid::new_v4().to_string();
+
+    meta::upsert_upload(
+        &pool,
+        DatabaseDriver::Sqlite,
+        entry.id,
+        &upload_id,
+        "reserved",
+    )
+    .await
+    .expect("create upload");
+
+    let moved = meta::transition_upload_state(
+        &pool,
+        DatabaseDriver::Sqlite,
+        &upload_id,
+        &["reserved"],
+        "uploading",
+    )
+    .await
+    .expect("transition to uploading");
+    assert!(moved);
+
+    meta::reserve_part(&pool, DatabaseDriver::Sqlite, &upload_id, 0, Some(0), 5)
+        .await
+        .expect("reserve part 0");
+    meta::begin_part_upload(&pool, DatabaseDriver::Sqlite, &upload_id)
+        .await
+        .expect("begin part 0");
+
+    meta::reserve_part(&pool, DatabaseDriver::Sqlite, &upload_id, 1, Some(5), 7)
+        .await
+        .expect("reserve part 1");
+    meta::begin_part_upload(&pool, DatabaseDriver::Sqlite, &upload_id)
+        .await
+        .expect("begin part 1");
+
+    let status = meta::get_upload_status(&pool, DatabaseDriver::Sqlite, &upload_id)
+        .await
+        .expect("fetch status after begins");
+    assert_eq!(status.active_part_count, 2);
+    assert_eq!(status.state, "uploading");
+
+    meta::complete_part(
+        &pool,
+        DatabaseDriver::Sqlite,
+        &upload_id,
+        0,
+        Some(0),
+        "etag-0",
+    )
+    .await
+    .expect("complete part 0");
+    let remaining = meta::finish_part_upload(&pool, DatabaseDriver::Sqlite, &upload_id)
+        .await
+        .expect("finish part 0");
+    assert_eq!(remaining, 1);
+
+    let status = meta::get_upload_status(&pool, DatabaseDriver::Sqlite, &upload_id)
+        .await
+        .expect("fetch status after first finish");
+    assert_eq!(status.active_part_count, 1);
+    assert_eq!(status.state, "uploading");
+
+    meta::complete_part(
+        &pool,
+        DatabaseDriver::Sqlite,
+        &upload_id,
+        1,
+        Some(5),
+        "etag-1",
+    )
+    .await
+    .expect("complete part 1");
+    let remaining = meta::finish_part_upload(&pool, DatabaseDriver::Sqlite, &upload_id)
+        .await
+        .expect("finish part 1");
+    assert_eq!(remaining, 0);
+
+    let status = meta::get_upload_status(&pool, DatabaseDriver::Sqlite, &upload_id)
+        .await
+        .expect("fetch status after all finishes");
+    assert_eq!(status.active_part_count, 0);
+    assert_eq!(status.state, "ready");
+}

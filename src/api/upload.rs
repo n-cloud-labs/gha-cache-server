@@ -357,14 +357,23 @@ pub async fn upload_chunk(
         return Err(ApiError::BadRequest("chunk size must be positive".into()));
     }
 
-    let ready = meta::transition_upload_state(
-        &st.pool,
-        st.database_driver,
-        &upload_id,
-        &["reserved", "ready"],
-        "uploading",
-    )
-    .await?;
+    let mut transitioned_to_uploading = false;
+    let ready = if status.state == "uploading" {
+        true
+    } else {
+        let ready = meta::transition_upload_state(
+            &st.pool,
+            st.database_driver,
+            &upload_id,
+            &["reserved", "ready"],
+            "uploading",
+        )
+        .await?;
+        if ready {
+            transitioned_to_uploading = true;
+        }
+        ready
+    };
     if !ready {
         return Err(ApiError::BadRequest(
             "upload is not ready to accept more parts".into(),
@@ -381,26 +390,30 @@ pub async fn upload_chunk(
     )
     .await
     {
-        let _ = meta::transition_upload_state(
-            &st.pool,
-            st.database_driver,
-            &upload_id,
-            &["uploading"],
-            "ready",
-        )
-        .await;
+        if transitioned_to_uploading {
+            let _ = meta::transition_upload_state(
+                &st.pool,
+                st.database_driver,
+                &upload_id,
+                &["uploading"],
+                "ready",
+            )
+            .await;
+        }
         return Err(err.into());
     }
 
     if let Err(err) = meta::begin_part_upload(&st.pool, st.database_driver, &upload_id).await {
-        let _ = meta::transition_upload_state(
-            &st.pool,
-            st.database_driver,
-            &upload_id,
-            &["uploading"],
-            "ready",
-        )
-        .await;
+        if transitioned_to_uploading {
+            let _ = meta::transition_upload_state(
+                &st.pool,
+                st.database_driver,
+                &upload_id,
+                &["uploading"],
+                "ready",
+            )
+            .await;
+        }
         return Err(err.into());
     }
 
@@ -413,16 +426,8 @@ pub async fn upload_chunk(
         Ok(etag) => etag,
         Err(err) => {
             let finish = meta::finish_part_upload(&st.pool, st.database_driver, &upload_id).await;
-            let _ = meta::transition_upload_state(
-                &st.pool,
-                st.database_driver,
-                &upload_id,
-                &["uploading"],
-                "ready",
-            )
-            .await;
             return match finish {
-                Ok(()) => Err(ApiError::S3(format!("{err}"))),
+                Ok(_) => Err(ApiError::S3(format!("{err}"))),
                 Err(db_err) => Err(db_err.into()),
             };
         }
@@ -438,34 +443,8 @@ pub async fn upload_chunk(
     .await
     {
         let finish = meta::finish_part_upload(&st.pool, st.database_driver, &upload_id).await;
-        let _ = meta::transition_upload_state(
-            &st.pool,
-            st.database_driver,
-            &upload_id,
-            &["uploading"],
-            "ready",
-        )
-        .await;
         return match finish {
-            Ok(()) => Err(err.into()),
-            Err(db_err) => Err(db_err.into()),
-        };
-    }
-
-    let ready = meta::transition_upload_state(
-        &st.pool,
-        st.database_driver,
-        &upload_id,
-        &["uploading"],
-        "ready",
-    )
-    .await?;
-    if !ready {
-        let finish = meta::finish_part_upload(&st.pool, st.database_driver, &upload_id).await;
-        return match finish {
-            Ok(()) => Err(ApiError::Internal(
-                "failed to finalize upload part because state changed".into(),
-            )),
+            Ok(_) => Err(err.into()),
             Err(db_err) => Err(db_err.into()),
         };
     }
@@ -1075,19 +1054,10 @@ mod tests {
         )
         .await
         .expect("complete part");
-        let back_to_reserved = meta::transition_upload_state(
-            &pool,
-            DatabaseDriver::Sqlite,
-            &upload_id,
-            &["uploading"],
-            "reserved",
-        )
-        .await
-        .expect("transition to reserved after upload");
-        assert!(back_to_reserved);
-        meta::finish_part_upload(&pool, DatabaseDriver::Sqlite, &upload_id)
+        let remaining = meta::finish_part_upload(&pool, DatabaseDriver::Sqlite, &upload_id)
             .await
             .expect("finish part upload");
+        assert_eq!(remaining, 0);
 
         let status = commit_handle
             .await
