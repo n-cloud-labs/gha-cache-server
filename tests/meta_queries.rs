@@ -329,5 +329,5 @@ async fn overlapping_part_uploads_hold_state_until_last_part_finishes() {
         .await
         .expect("fetch status after all finishes");
     assert_eq!(status.active_part_count, 0);
-    assert_eq!(status.state, "ready");
+    assert_eq!(status.state, "uploading");
 }

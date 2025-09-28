@@ -331,7 +331,7 @@ pub async fn finalize_cache_entry_upload(
         &st.pool,
         st.database_driver,
         &upload_id,
-        &["reserved", "ready"],
+        &["reserved", "ready", "uploading"],
         "finalizing",
     )
     .await?;
@@ -349,7 +349,7 @@ pub async fn finalize_cache_entry_upload(
             st.database_driver,
             &upload_id,
             &["finalizing"],
-            "ready",
+            "uploading",
         )
         .await;
         let _ = meta::set_pending_finalize(&st.pool, st.database_driver, &upload_id, false).await;
@@ -391,7 +391,7 @@ pub async fn finalize_cache_entry_upload(
                 st.database_driver,
                 &upload_id,
                 &["finalizing"],
-                "ready",
+                "uploading",
             )
             .await;
             let _ =

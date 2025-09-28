@@ -123,7 +123,7 @@ The cache metadata keeps track of the multipart upload lifecycle inside the
 `cache_uploads.state` column. API handlers use optimistic transitions to gate
 concurrent operations through `transition_upload_state`, and the active part
 counter plus the `pending_finalize` flag complement the state machine when the
-commit endpoint waits for in-flight parts to finish.【F:src/meta/mod.rs†L671-L695】【F:src/meta/mod.rs†L102-L149】【F:src/api/upload.rs†L333-L463】【F:src/api/upload.rs†L628-L704】
+commit endpoint waits for in-flight parts to finish.【F:src/meta/mod.rs†L136-L200】【F:src/api/upload.rs†L333-L470】【F:src/api/upload.rs†L600-L687】
 
 ### States
 
@@ -131,30 +131,31 @@ commit endpoint waits for in-flight parts to finish.【F:src/meta/mod.rs†L671-
   sent.【F:src/api/upload.rs†L321-L340】
 - `uploading` &mdash; at least one client is streaming a part. Additional clients can
   attach while the session remains active, and the upload stays in this state
-  until every part finishes or fails.【F:src/api/upload.rs†L333-L463】【F:src/meta/mod.rs†L153-L240】
-- `ready` &mdash; the active part counter reached zero so the cache can accept a new
-  part or begin finalization.【F:src/api/upload.rs†L333-L463】【F:src/meta/mod.rs†L213-L240】
+  until the commit endpoint finalizes the session.【F:src/api/upload.rs†L333-L470】【F:src/meta/mod.rs†L153-L230】
+- `ready` &mdash; transitional idle state retained for compatibility before any
+  streaming starts. Once an upload enters `uploading` it remains there until it
+  is finalized or reset administratively.【F:src/api/upload.rs†L333-L470】
 - `finalizing` &mdash; the commit endpoint reserved the upload and is validating the
-  recorded parts before completing the multipart upload in the blob store.【F:src/api/upload.rs†L628-L675】
+  recorded parts before completing the multipart upload in the blob store.【F:src/api/upload.rs†L600-L664】
 - `completed` &mdash; the backing store acknowledged the multipart completion and no
-  more writes are accepted.【F:src/api/upload.rs†L676-L704】
+  more writes are accepted.【F:src/api/upload.rs†L665-L687】
 
 ### Transitions
 
 | From         | To          | Trigger |
 |--------------|-------------|---------|
 | `reserved`   | `uploading` | First part upload request reserves the session. |
-| `ready`      | `uploading` | Additional part uploads after a previous part completed. |
-| `uploading`  | `ready`     | The last active part finished (success) or was rolled back after an error. |
-| `reserved`   | `finalizing`| Commit request when no parts are actively uploading. |
-| `ready`      | `finalizing`| Commit request when no parts are actively uploading. |
-| `finalizing` | `ready`     | Finalization failed validation or blob completion. |
+| `ready`      | `uploading` | Additional part uploads before streaming begins. |
+| `reserved`   | `finalizing`| Commit request when no parts ever streamed. |
+| `ready`      | `finalizing`| Commit request when the session never left idle. |
+| `uploading`  | `finalizing`| Commit request after all active parts finished. |
+| `finalizing` | `uploading` | Finalization failed validation or blob completion and the session reopens for uploads. |
 | `finalizing` | `completed` | Blob store multipart completion succeeded. |
 
 Calls to upload additional parts are rejected once the session is flagged for
 finalization or has entered the `finalizing` or `completed` states. Otherwise,
-uploads already in the `uploading` state can continue streaming new parts in
-parallel.【F:src/api/upload.rs†L333-L463】【F:src/api/upload.rs†L620-L704】
+uploads already in the `uploading` state remain eligible to stream new parts in
+parallel until the commit endpoint runs.【F:src/api/upload.rs†L333-L470】【F:src/api/upload.rs†L600-L687】
 
 ## Database schema
 

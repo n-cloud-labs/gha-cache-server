@@ -9,6 +9,8 @@ use uuid::Uuid;
 
 use crate::config::DatabaseDriver;
 use crate::db::rewrite_placeholders;
+use crate::error::ApiError;
+use crate::meta;
 
 const FINALIZE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
@@ -142,7 +144,7 @@ pub async fn wait_for_no_active_parts(
 ) -> Result<(), sqlx::Error> {
     loop {
         let status = get_upload_status(pool, driver, upload_id).await?;
-        if status.active_part_count == 0 && status.state != "uploading" {
+        if status.active_part_count == 0 {
             break;
         }
         time::sleep(FINALIZE_POLL_INTERVAL).await;
@@ -177,43 +179,31 @@ async fn decrement_active_part_count(
     upload_id: &str,
 ) -> Result<i64, sqlx::Error> {
     let mut tx: Transaction<'_, sqlx::Any> = pool.begin().await?;
+    let now = Utc::now().timestamp();
+
+    let update_query = rewrite_placeholders(
+        "UPDATE cache_uploads SET active_part_count = CASE WHEN active_part_count > 0 THEN active_part_count - 1 ELSE 0 END, updated_at = ? WHERE upload_id = ?",
+        driver,
+    );
+    let result = sqlx::query(&update_query)
+        .bind(now)
+        .bind(upload_id)
+        .execute(&mut *tx)
+        .await?;
+    if result.rows_affected() == 0 {
+        tx.rollback().await?;
+        return Err(sqlx::Error::RowNotFound);
+    }
+
     let select_query = rewrite_placeholders(
-        "SELECT active_part_count, state FROM cache_uploads WHERE upload_id = ?",
+        "SELECT active_part_count FROM cache_uploads WHERE upload_id = ?",
         driver,
     );
     let row = sqlx::query(&select_query)
         .bind(upload_id)
         .fetch_one(&mut *tx)
         .await?;
-    let current: i64 = row.try_get("active_part_count")?;
-    let state: String = row.try_get("state")?;
-    let new_value = if current > 0 { current - 1 } else { 0 };
-    let now = Utc::now().timestamp();
-
-    if new_value == 0 && state == "uploading" {
-        let update_query = rewrite_placeholders(
-            "UPDATE cache_uploads SET active_part_count = ?, state = ?, updated_at = ? WHERE upload_id = ?",
-            driver,
-        );
-        sqlx::query(&update_query)
-            .bind(new_value)
-            .bind("ready")
-            .bind(now)
-            .bind(upload_id)
-            .execute(&mut *tx)
-            .await?;
-    } else {
-        let update_query = rewrite_placeholders(
-            "UPDATE cache_uploads SET active_part_count = ?, updated_at = ? WHERE upload_id = ?",
-            driver,
-        );
-        sqlx::query(&update_query)
-            .bind(new_value)
-            .bind(now)
-            .bind(upload_id)
-            .execute(&mut *tx)
-            .await?;
-    }
+    let new_value: i64 = row.try_get("active_part_count")?;
 
     tx.commit().await?;
     Ok(new_value)
@@ -683,6 +673,33 @@ pub async fn get_completed_parts(
             })
         })
         .collect()
+}
+
+pub async fn transition_to_uploading(
+    pool: &AnyPool,
+    database_driver: DatabaseDriver,
+    upload_id: &str,
+    status: &mut UploadStatus,
+) -> Result<(), ApiError> {
+    let ready = meta::transition_upload_state(
+        pool,
+        database_driver,
+        upload_id,
+        &["reserved", "ready", "uploading"],
+        "uploading",
+    )
+    .await?;
+
+    if !ready {
+        *status = get_upload_status(pool, database_driver, upload_id).await?;
+        if status.pending_finalize || status.state != "uploading" {
+            return Err(ApiError::BadRequest(
+                "upload is not ready to accept more parts".into(),
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 pub async fn transition_upload_state(
