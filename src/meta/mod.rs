@@ -1,20 +1,16 @@
 use chrono::{DateTime, Utc};
-use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use sqlx::{AnyPool, Error, Row, Transaction};
-use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::io;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::{sync::Notify, time};
+use tokio::time;
 use uuid::Uuid;
 
 use crate::config::DatabaseDriver;
 use crate::db::rewrite_placeholders;
 
-static FINALIZE_WAITERS: Lazy<Mutex<HashMap<String, Arc<Notify>>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
+const FINALIZE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CacheEntry {
@@ -122,35 +118,6 @@ async fn fetch_upload(
     map_upload_row(row)
 }
 
-pub fn register_finalize_waiter(upload_id: &str) -> Arc<Notify> {
-    let mut waiters = FINALIZE_WAITERS
-        .lock()
-        .expect("finalize waiters lock poisoned");
-    waiters
-        .entry(upload_id.to_string())
-        .or_insert_with(|| Arc::new(Notify::new()))
-        .clone()
-}
-
-pub fn notify_finalize_waiters(upload_id: &str) {
-    let notify = {
-        let mut waiters = FINALIZE_WAITERS
-            .lock()
-            .expect("finalize waiters lock poisoned");
-        waiters.remove(upload_id)
-    };
-    if let Some(notifier) = notify {
-        notifier.notify_waiters();
-    }
-}
-
-pub fn clear_finalize_waiter(upload_id: &str) {
-    let mut waiters = FINALIZE_WAITERS
-        .lock()
-        .expect("finalize waiters lock poisoned");
-    waiters.remove(upload_id);
-}
-
 pub async fn get_upload_status(
     pool: &AnyPool,
     driver: DatabaseDriver,
@@ -172,17 +139,13 @@ pub async fn wait_for_no_active_parts(
     pool: &AnyPool,
     driver: DatabaseDriver,
     upload_id: &str,
-    notifier: Arc<Notify>,
 ) -> Result<(), sqlx::Error> {
     loop {
         let status = get_upload_status(pool, driver, upload_id).await?;
         if status.active_part_count == 0 && status.state != "uploading" {
             break;
         }
-        tokio::select! {
-            _ = notifier.notified() => {},
-            _ = time::sleep(Duration::from_millis(50)) => {},
-        }
+        time::sleep(FINALIZE_POLL_INTERVAL).await;
     }
     Ok(())
 }
@@ -212,10 +175,10 @@ async fn decrement_active_part_count(
     pool: &AnyPool,
     driver: DatabaseDriver,
     upload_id: &str,
-) -> Result<bool, sqlx::Error> {
+) -> Result<(), sqlx::Error> {
     let mut tx: Transaction<'_, sqlx::Any> = pool.begin().await?;
     let select_query = rewrite_placeholders(
-        "SELECT active_part_count, pending_finalize FROM cache_uploads WHERE upload_id = ?",
+        "SELECT active_part_count FROM cache_uploads WHERE upload_id = ?",
         driver,
     );
     let row = sqlx::query(&select_query)
@@ -223,7 +186,6 @@ async fn decrement_active_part_count(
         .fetch_one(&mut *tx)
         .await?;
     let current: i64 = row.try_get("active_part_count")?;
-    let pending: bool = try_get_bool(&row, "pending_finalize")?;
     let new_value = if current > 0 { current - 1 } else { 0 };
     let now = Utc::now().timestamp();
     let update_query = rewrite_placeholders(
@@ -237,7 +199,7 @@ async fn decrement_active_part_count(
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
-    Ok(pending && new_value == 0)
+    Ok(())
 }
 
 pub async fn begin_part_upload(
@@ -253,11 +215,7 @@ pub async fn finish_part_upload(
     driver: DatabaseDriver,
     upload_id: &str,
 ) -> Result<(), sqlx::Error> {
-    let should_notify = decrement_active_part_count(pool, driver, upload_id).await?;
-    if should_notify {
-        notify_finalize_waiters(upload_id);
-    }
-    Ok(())
+    decrement_active_part_count(pool, driver, upload_id).await
 }
 
 pub async fn set_pending_finalize(
