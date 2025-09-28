@@ -492,7 +492,7 @@ pub async fn reserve_part(
     let mut tx = pool.begin().await?;
 
     let insert_query = rewrite_placeholders(
-        "INSERT INTO cache_upload_parts (upload_id, part_index, part_number, offset, size, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO cache_upload_parts (upload_id, part_index, part_number, part_offset, size, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         driver,
     );
     let part_number = i64::from(part_index) + 1;
@@ -517,7 +517,7 @@ pub async fn reserve_part(
             if let sqlx::Error::Database(db_err) = &err {
                 if db_err.is_unique_violation() {
                     let update_query = rewrite_placeholders(
-                        "UPDATE cache_upload_parts SET offset = ?, size = ?, state = ?, etag = NULL, updated_at = ? WHERE upload_id = ? AND part_index = ?",
+                        "UPDATE cache_upload_parts SET part_offset = ?, size = ?, state = ?, etag = NULL, updated_at = ? WHERE upload_id = ? AND part_index = ?",
                         driver,
                     );
                     sqlx::query(&update_query)
@@ -553,7 +553,7 @@ pub async fn complete_part(
 ) -> Result<(), sqlx::Error> {
     let mut tx: Transaction<'_, sqlx::Any> = pool.begin().await?;
     let fetch_query = rewrite_placeholders(
-        "SELECT size, offset FROM cache_upload_parts WHERE upload_id = ? AND part_index = ?",
+        "SELECT size, part_offset FROM cache_upload_parts WHERE upload_id = ? AND part_index = ?",
         driver,
     );
     let maybe_row = sqlx::query(&fetch_query)
@@ -570,7 +570,7 @@ pub async fn complete_part(
     };
 
     let size: i64 = row.try_get("size")?;
-    let existing_offset: Option<i64> = row.try_get("offset")?;
+    let existing_offset: Option<i64> = row.try_get("part_offset")?;
 
     let mut expected_offset = provided_offset;
     if expected_offset.is_none() {
@@ -605,7 +605,7 @@ pub async fn complete_part(
 
     let now = Utc::now().timestamp();
     let update_query = rewrite_placeholders(
-        "UPDATE cache_upload_parts SET offset = ?, etag = ?, state = ?, updated_at = ?, size = ? WHERE upload_id = ? AND part_index = ?",
+        "UPDATE cache_upload_parts SET part_offset = ?, etag = ?, state = ?, updated_at = ?, size = ? WHERE upload_id = ? AND part_index = ?",
         driver,
     );
     sqlx::query(&update_query)
@@ -629,7 +629,7 @@ pub async fn get_completed_parts(
     upload_id: &str,
 ) -> Result<Vec<UploadPartRecord>, sqlx::Error> {
     let query = rewrite_placeholders(
-        "SELECT part_index, part_number, offset, size, etag FROM cache_upload_parts WHERE upload_id = ? AND state = ? ORDER BY part_index ASC",
+        "SELECT part_index, part_number, part_offset, size, etag FROM cache_upload_parts WHERE upload_id = ? AND state = ? ORDER BY part_index ASC",
         driver,
     );
     let rows = sqlx::query(&query)
@@ -640,7 +640,7 @@ pub async fn get_completed_parts(
 
     rows.into_iter()
         .map(|row| {
-            let offset: Option<i64> = row.try_get("offset")?;
+            let offset: Option<i64> = row.try_get("part_offset")?;
             let etag: Option<String> = row.try_get("etag")?;
             let part_index: i32 = row.try_get("part_index")?;
             let part_number: i32 = row.try_get("part_number")?;
