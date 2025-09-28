@@ -397,3 +397,31 @@ pub async fn get_parts(
     parts.sort_by_key(|part| part.part_number);
     Ok(parts.into_iter().map(|p| (p.part_number, p.etag)).collect())
 }
+
+pub async fn transition_upload_state(
+    pool: &AnyPool,
+    driver: DatabaseDriver,
+    upload_id: &str,
+    allowed: &[&str],
+    next: &str,
+) -> Result<bool, sqlx::Error> {
+    let upload = fetch_upload(pool, driver, upload_id).await?;
+    if !allowed.iter().any(|state| *state == upload.state) {
+        return Ok(false);
+    }
+
+    let now = Utc::now().timestamp();
+    let query = rewrite_placeholders(
+        "UPDATE cache_uploads SET state = ?, updated_at = ? WHERE upload_id = ? AND state = ?",
+        driver,
+    );
+    let updated = sqlx::query(&query)
+        .bind(next)
+        .bind(now)
+        .bind(upload_id)
+        .bind(upload.state)
+        .execute(pool)
+        .await?;
+
+    Ok(updated.rows_affected() == 1)
+}

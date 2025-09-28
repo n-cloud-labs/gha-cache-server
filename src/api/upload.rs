@@ -334,19 +334,88 @@ pub async fn upload_chunk(
         .await?
         .len() as i32;
 
+    let ready = meta::transition_upload_state(
+        &st.pool,
+        st.database_driver,
+        &upload_id,
+        &["reserved", "ready"],
+        "uploading",
+    )
+    .await?;
+    if !ready {
+        return Err(ApiError::BadRequest(
+            "upload is not ready to accept more parts".into(),
+        ));
+    }
+
     let bs = body_to_blob_payload(body);
-    let etag = st
+    let etag = match st
         .store
         .upload_part(&storage_key, &upload_id, next_part, bs)
         .await
-        .map_err(|e| ApiError::S3(format!("{e}")))?;
-    meta::add_part(&st.pool, st.database_driver, &upload_id, next_part, &etag).await?;
+    {
+        Ok(etag) => etag,
+        Err(err) => {
+            let _ = meta::transition_upload_state(
+                &st.pool,
+                st.database_driver,
+                &upload_id,
+                &["uploading"],
+                "ready",
+            )
+            .await;
+            return Err(ApiError::S3(format!("{err}")));
+        }
+    };
+    if let Err(err) =
+        meta::add_part(&st.pool, st.database_driver, &upload_id, next_part, &etag).await
+    {
+        let _ = meta::transition_upload_state(
+            &st.pool,
+            st.database_driver,
+            &upload_id,
+            &["uploading"],
+            "ready",
+        )
+        .await;
+        return Err(err.into());
+    }
+
+    let ready = meta::transition_upload_state(
+        &st.pool,
+        st.database_driver,
+        &upload_id,
+        &["uploading"],
+        "ready",
+    )
+    .await?;
+    if !ready {
+        return Err(ApiError::Internal(
+            "failed to finalize upload part because state changed".into(),
+        ));
+    }
 
     Ok(StatusCode::OK)
 }
 
 pub(crate) fn body_to_blob_payload(body: axum::body::Body) -> BlobUploadPayload {
     body.into_data_stream().map_err(anyhow::Error::from).boxed()
+}
+
+pub(crate) fn ensure_all_parts_uploaded(parts: &[(i32, String)]) -> Result<()> {
+    if parts.is_empty() {
+        return Err(ApiError::BadRequest(
+            "multipart upload must include at least one part".into(),
+        ));
+    }
+    for (expected, (part_number, _)) in (1..).zip(parts.iter()) {
+        if *part_number != expected {
+            return Err(ApiError::BadRequest(format!(
+                "missing part {expected} before finalization"
+            )));
+        }
+    }
+    Ok(())
 }
 
 // ====== actions/cache: POST /_apis/artifactcache/caches/:id { size } ======
@@ -366,11 +435,65 @@ pub async fn commit_cache(
         .await?;
     let upload_id: String = rec.try_get("upload_id")?;
     let storage_key: String = rec.try_get("storage_key")?;
+    let reserved = meta::transition_upload_state(
+        &st.pool,
+        st.database_driver,
+        &upload_id,
+        &["reserved", "ready"],
+        "finalizing",
+    )
+    .await?;
+    if !reserved {
+        return Err(ApiError::BadRequest(
+            "upload is still receiving parts".into(),
+        ));
+    }
+
     let parts = meta::get_parts(&st.pool, st.database_driver, &upload_id).await?;
-    st.store
+    if let Err(err) = ensure_all_parts_uploaded(&parts) {
+        let _ = meta::transition_upload_state(
+            &st.pool,
+            st.database_driver,
+            &upload_id,
+            &["finalizing"],
+            "ready",
+        )
+        .await;
+        return Err(err);
+    }
+
+    let complete_result = st
+        .store
         .complete_multipart(&storage_key, &upload_id, parts)
-        .await
-        .map_err(|e| ApiError::S3(format!("{e}")))?;
+        .await;
+    match complete_result {
+        Ok(()) => {
+            let finalized = meta::transition_upload_state(
+                &st.pool,
+                st.database_driver,
+                &upload_id,
+                &["finalizing"],
+                "completed",
+            )
+            .await?;
+            if !finalized {
+                return Err(ApiError::Internal(
+                    "failed to record completed upload state".into(),
+                ));
+            }
+        }
+        Err(err) => {
+            let _ = meta::transition_upload_state(
+                &st.pool,
+                st.database_driver,
+                &upload_id,
+                &["finalizing"],
+                "ready",
+            )
+            .await;
+            return Err(ApiError::S3(format!("{err}")));
+        }
+    }
 
     // Persist size if provided
     if let Some(size) = req.get("size").and_then(|v| v.as_i64()) {
@@ -529,5 +652,22 @@ mod tests {
         let raw = "primary, fallback, primary ,".to_string();
         let parsed = parse_keys_parameter(Some(&raw)).expect("keys");
         assert_eq!(parsed, vec!["primary", "fallback"]);
+    }
+
+    #[test]
+    fn ensure_all_parts_uploaded_accepts_contiguous_sequence() {
+        let parts = vec![(1, "etag-1".into()), (2, "etag-2".into())];
+        assert!(ensure_all_parts_uploaded(&parts).is_ok());
+    }
+
+    #[test]
+    fn ensure_all_parts_uploaded_rejects_gaps() {
+        let parts = vec![(1, "etag-1".into()), (3, "etag-3".into())];
+        let err = ensure_all_parts_uploaded(&parts).expect_err("gap should be rejected");
+        if let ApiError::BadRequest(message) = err {
+            assert!(message.contains("missing part 2"));
+        } else {
+            panic!("unexpected error variant");
+        }
     }
 }
