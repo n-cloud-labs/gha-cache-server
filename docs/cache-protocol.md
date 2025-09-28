@@ -129,10 +129,11 @@ commit endpoint waits for in-flight parts to finish.【F:src/meta/mod.rs†L671-
 
 - `reserved` &mdash; created alongside the cache entry metadata before any data is
   sent.【F:src/api/upload.rs†L321-L340】
-- `uploading` &mdash; at least one client is streaming a part. New clients must wait
-  for the upload to return to `ready`.【F:src/api/upload.rs†L364-L385】
-- `ready` &mdash; no parts are currently uploading and the cache can accept a new
-  part or start finalization.【F:src/api/upload.rs†L426-L463】
+- `uploading` &mdash; at least one client is streaming a part. Additional clients can
+  attach while the session remains active, and the upload stays in this state
+  until every part finishes or fails.【F:src/api/upload.rs†L333-L463】【F:src/meta/mod.rs†L153-L240】
+- `ready` &mdash; the active part counter reached zero so the cache can accept a new
+  part or begin finalization.【F:src/api/upload.rs†L333-L463】【F:src/meta/mod.rs†L213-L240】
 - `finalizing` &mdash; the commit endpoint reserved the upload and is validating the
   recorded parts before completing the multipart upload in the blob store.【F:src/api/upload.rs†L628-L675】
 - `completed` &mdash; the backing store acknowledged the multipart completion and no
@@ -144,15 +145,16 @@ commit endpoint waits for in-flight parts to finish.【F:src/meta/mod.rs†L671-
 |--------------|-------------|---------|
 | `reserved`   | `uploading` | First part upload request reserves the session. |
 | `ready`      | `uploading` | Additional part uploads after a previous part completed. |
-| `uploading`  | `ready`     | The current part finished (success) or was rolled back after an error. |
+| `uploading`  | `ready`     | The last active part finished (success) or was rolled back after an error. |
 | `reserved`   | `finalizing`| Commit request when no parts are actively uploading. |
 | `ready`      | `finalizing`| Commit request when no parts are actively uploading. |
 | `finalizing` | `ready`     | Finalization failed validation or blob completion. |
 | `finalizing` | `completed` | Blob store multipart completion succeeded. |
 
-Calls to upload additional parts while the state is `uploading`, `finalizing`,
-or `completed` fail with `"upload is not ready to accept more parts"`, which is
-the signal seen when concurrent part uploads target the same cache entry.【F:src/api/upload.rs†L364-L399】【F:src/api/upload.rs†L640-L704】
+Calls to upload additional parts are rejected once the session is flagged for
+finalization or has entered the `finalizing` or `completed` states. Otherwise,
+uploads already in the `uploading` state can continue streaming new parts in
+parallel.【F:src/api/upload.rs†L333-L463】【F:src/api/upload.rs†L620-L704】
 
 ## Database schema
 

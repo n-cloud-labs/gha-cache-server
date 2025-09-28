@@ -45,6 +45,11 @@ pub async fn put_upload(
     let upload_id: String = rec.try_get("upload_id")?;
     let storage_key: String = rec.try_get("storage_key")?;
 
+    let status = meta::get_upload_status(&st.pool, st.database_driver, &upload_id).await?;
+    if status.pending_finalize {
+        return Err(ApiError::BadRequest("upload is finalizing".into()));
+    }
+
     let block_id = query
         .blockid
         .as_deref()
@@ -54,14 +59,23 @@ pub async fn put_upload(
     let part_no = i32::try_from(chunk_index + 1)
         .map_err(|_| ApiError::BadRequest("invalid chunk index".into()))?;
     let size = parse_content_length(&headers)?;
-    let ready = meta::transition_upload_state(
-        &st.pool,
-        st.database_driver,
-        &upload_id,
-        &["reserved", "ready"],
-        "uploading",
-    )
-    .await?;
+    let mut transitioned_to_uploading = false;
+    let ready = if status.state == "uploading" {
+        true
+    } else {
+        let ready = meta::transition_upload_state(
+            &st.pool,
+            st.database_driver,
+            &upload_id,
+            &["reserved", "ready"],
+            "uploading",
+        )
+        .await?;
+        if ready {
+            transitioned_to_uploading = true;
+        }
+        ready
+    };
     if !ready {
         return Err(ApiError::BadRequest(
             "upload is not ready to accept more parts".into(),
@@ -77,14 +91,30 @@ pub async fn put_upload(
     )
     .await
     {
-        let _ = meta::transition_upload_state(
-            &st.pool,
-            st.database_driver,
-            &upload_id,
-            &["uploading"],
-            "ready",
-        )
-        .await;
+        if transitioned_to_uploading {
+            let _ = meta::transition_upload_state(
+                &st.pool,
+                st.database_driver,
+                &upload_id,
+                &["uploading"],
+                "ready",
+            )
+            .await;
+        }
+        return Err(err.into());
+    }
+
+    if let Err(err) = meta::begin_part_upload(&st.pool, st.database_driver, &upload_id).await {
+        if transitioned_to_uploading {
+            let _ = meta::transition_upload_state(
+                &st.pool,
+                st.database_driver,
+                &upload_id,
+                &["uploading"],
+                "ready",
+            )
+            .await;
+        }
         return Err(err.into());
     }
 
@@ -96,15 +126,11 @@ pub async fn put_upload(
     {
         Ok(etag) => etag,
         Err(err) => {
-            let _ = meta::transition_upload_state(
-                &st.pool,
-                st.database_driver,
-                &upload_id,
-                &["uploading"],
-                "ready",
-            )
-            .await;
-            return Err(ApiError::S3(format!("{err}")));
+            let finish = meta::finish_part_upload(&st.pool, st.database_driver, &upload_id).await;
+            return match finish {
+                Ok(_) => Err(ApiError::S3(format!("{err}"))),
+                Err(db_err) => Err(db_err.into()),
+            };
         }
     };
     if let Err(err) = meta::complete_part(
@@ -117,30 +143,14 @@ pub async fn put_upload(
     )
     .await
     {
-        let _ = meta::transition_upload_state(
-            &st.pool,
-            st.database_driver,
-            &upload_id,
-            &["uploading"],
-            "ready",
-        )
-        .await;
-        return Err(err.into());
+        let finish = meta::finish_part_upload(&st.pool, st.database_driver, &upload_id).await;
+        return match finish {
+            Ok(_) => Err(err.into()),
+            Err(db_err) => Err(db_err.into()),
+        };
     }
 
-    let ready = meta::transition_upload_state(
-        &st.pool,
-        st.database_driver,
-        &upload_id,
-        &["uploading"],
-        "ready",
-    )
-    .await?;
-    if !ready {
-        return Err(ApiError::Internal(
-            "failed to finalize upload part because state changed".into(),
-        ));
-    }
+    meta::finish_part_upload(&st.pool, st.database_driver, &upload_id).await?;
 
     Ok(created_response())
 }

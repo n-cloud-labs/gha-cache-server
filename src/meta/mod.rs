@@ -175,10 +175,10 @@ async fn decrement_active_part_count(
     pool: &AnyPool,
     driver: DatabaseDriver,
     upload_id: &str,
-) -> Result<(), sqlx::Error> {
+) -> Result<i64, sqlx::Error> {
     let mut tx: Transaction<'_, sqlx::Any> = pool.begin().await?;
     let select_query = rewrite_placeholders(
-        "SELECT active_part_count FROM cache_uploads WHERE upload_id = ?",
+        "SELECT active_part_count, state FROM cache_uploads WHERE upload_id = ?",
         driver,
     );
     let row = sqlx::query(&select_query)
@@ -186,20 +186,37 @@ async fn decrement_active_part_count(
         .fetch_one(&mut *tx)
         .await?;
     let current: i64 = row.try_get("active_part_count")?;
+    let state: String = row.try_get("state")?;
     let new_value = if current > 0 { current - 1 } else { 0 };
     let now = Utc::now().timestamp();
-    let update_query = rewrite_placeholders(
-        "UPDATE cache_uploads SET active_part_count = ?, updated_at = ? WHERE upload_id = ?",
-        driver,
-    );
-    sqlx::query(&update_query)
-        .bind(new_value)
-        .bind(now)
-        .bind(upload_id)
-        .execute(&mut *tx)
-        .await?;
+
+    if new_value == 0 && state == "uploading" {
+        let update_query = rewrite_placeholders(
+            "UPDATE cache_uploads SET active_part_count = ?, state = ?, updated_at = ? WHERE upload_id = ?",
+            driver,
+        );
+        sqlx::query(&update_query)
+            .bind(new_value)
+            .bind("ready")
+            .bind(now)
+            .bind(upload_id)
+            .execute(&mut *tx)
+            .await?;
+    } else {
+        let update_query = rewrite_placeholders(
+            "UPDATE cache_uploads SET active_part_count = ?, updated_at = ? WHERE upload_id = ?",
+            driver,
+        );
+        sqlx::query(&update_query)
+            .bind(new_value)
+            .bind(now)
+            .bind(upload_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+
     tx.commit().await?;
-    Ok(())
+    Ok(new_value)
 }
 
 pub async fn begin_part_upload(
@@ -214,7 +231,7 @@ pub async fn finish_part_upload(
     pool: &AnyPool,
     driver: DatabaseDriver,
     upload_id: &str,
-) -> Result<(), sqlx::Error> {
+) -> Result<i64, sqlx::Error> {
     decrement_active_part_count(pool, driver, upload_id).await
 }
 
