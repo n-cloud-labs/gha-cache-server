@@ -16,6 +16,8 @@ spec:
   {{- if .Values.service.loadBalancerIP }}
   loadBalancerIP: {{ .Values.service.loadBalancerIP }}
   {{- end }}
+  ipFamilyPolicy: {{ .Values.service.familyPolicy }}
+  ipFamilies: {{ .Values.service.ipFamilies|toJson }}
   ports:
     - port: {{ .Values.service.port }}
       targetPort: http

@@ -45,6 +45,8 @@ service:
   annotations: {}
   labels: {}
   loadBalancerIP: ""
+  familyPolicy: SingleStack
+  ipFamilies: ['IPv4']
 
 ingress:
   enabled: false
