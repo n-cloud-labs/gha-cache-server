@@ -339,6 +339,11 @@ pub async fn upload_chunk(
     let upload_id: String = rec.try_get("upload_id")?;
     let storage_key: String = rec.try_get("storage_key")?;
 
+    let status = meta::get_upload_status(&st.pool, st.database_driver, &upload_id).await?;
+    if status.pending_finalize {
+        return Err(ApiError::BadRequest("upload is finalizing".into()));
+    }
+
     let block_id = query
         .block_id
         .as_deref()
@@ -387,6 +392,18 @@ pub async fn upload_chunk(
         return Err(err.into());
     }
 
+    if let Err(err) = meta::begin_part_upload(&st.pool, st.database_driver, &upload_id).await {
+        let _ = meta::transition_upload_state(
+            &st.pool,
+            st.database_driver,
+            &upload_id,
+            &["uploading"],
+            "ready",
+        )
+        .await;
+        return Err(err.into());
+    }
+
     let bs = body_to_blob_payload(body);
     let etag = match st
         .store
@@ -395,6 +412,7 @@ pub async fn upload_chunk(
     {
         Ok(etag) => etag,
         Err(err) => {
+            let finish = meta::finish_part_upload(&st.pool, st.database_driver, &upload_id).await;
             let _ = meta::transition_upload_state(
                 &st.pool,
                 st.database_driver,
@@ -403,7 +421,10 @@ pub async fn upload_chunk(
                 "ready",
             )
             .await;
-            return Err(ApiError::S3(format!("{err}")));
+            return match finish {
+                Ok(()) => Err(ApiError::S3(format!("{err}"))),
+                Err(db_err) => Err(db_err.into()),
+            };
         }
     };
     if let Err(err) = meta::complete_part(
@@ -416,6 +437,7 @@ pub async fn upload_chunk(
     )
     .await
     {
+        let finish = meta::finish_part_upload(&st.pool, st.database_driver, &upload_id).await;
         let _ = meta::transition_upload_state(
             &st.pool,
             st.database_driver,
@@ -424,7 +446,10 @@ pub async fn upload_chunk(
             "ready",
         )
         .await;
-        return Err(err.into());
+        return match finish {
+            Ok(()) => Err(err.into()),
+            Err(db_err) => Err(db_err.into()),
+        };
     }
 
     let ready = meta::transition_upload_state(
@@ -436,10 +461,16 @@ pub async fn upload_chunk(
     )
     .await?;
     if !ready {
-        return Err(ApiError::Internal(
-            "failed to finalize upload part because state changed".into(),
-        ));
+        let finish = meta::finish_part_upload(&st.pool, st.database_driver, &upload_id).await;
+        return match finish {
+            Ok(()) => Err(ApiError::Internal(
+                "failed to finalize upload part because state changed".into(),
+            )),
+            Err(db_err) => Err(db_err.into()),
+        };
     }
+
+    meta::finish_part_upload(&st.pool, st.database_driver, &upload_id).await?;
 
     Ok(StatusCode::OK)
 }
@@ -589,6 +620,23 @@ pub async fn commit_cache(
         .await?;
     let upload_id: String = rec.try_get("upload_id")?;
     let storage_key: String = rec.try_get("storage_key")?;
+    let notifier = meta::register_finalize_waiter(&upload_id);
+    if let Err(err) =
+        meta::set_pending_finalize(&st.pool, st.database_driver, &upload_id, true).await
+    {
+        meta::clear_finalize_waiter(&upload_id);
+        return Err(err.into());
+    }
+
+    if let Err(err) =
+        meta::wait_for_no_active_parts(&st.pool, st.database_driver, &upload_id, notifier.clone())
+            .await
+    {
+        let _ = meta::set_pending_finalize(&st.pool, st.database_driver, &upload_id, false).await;
+        meta::clear_finalize_waiter(&upload_id);
+        return Err(err.into());
+    }
+
     let reserved = meta::transition_upload_state(
         &st.pool,
         st.database_driver,
@@ -598,6 +646,8 @@ pub async fn commit_cache(
     )
     .await?;
     if !reserved {
+        let _ = meta::set_pending_finalize(&st.pool, st.database_driver, &upload_id, false).await;
+        meta::clear_finalize_waiter(&upload_id);
         return Err(ApiError::BadRequest(
             "upload is still receiving parts".into(),
         ));
@@ -614,6 +664,8 @@ pub async fn commit_cache(
             "ready",
         )
         .await;
+        let _ = meta::set_pending_finalize(&st.pool, st.database_driver, &upload_id, false).await;
+        meta::clear_finalize_waiter(&upload_id);
         return Err(err);
     }
 
@@ -639,6 +691,9 @@ pub async fn commit_cache(
             )
             .await?;
             if !finalized {
+                let _ = meta::set_pending_finalize(&st.pool, st.database_driver, &upload_id, false)
+                    .await;
+                meta::clear_finalize_waiter(&upload_id);
                 return Err(ApiError::Internal(
                     "failed to record completed upload state".into(),
                 ));
@@ -653,9 +708,15 @@ pub async fn commit_cache(
                 "ready",
             )
             .await;
+            let _ =
+                meta::set_pending_finalize(&st.pool, st.database_driver, &upload_id, false).await;
+            meta::clear_finalize_waiter(&upload_id);
             return Err(ApiError::S3(format!("{err}")));
         }
     }
+
+    let _ = meta::set_pending_finalize(&st.pool, st.database_driver, &upload_id, false).await;
+    meta::clear_finalize_waiter(&upload_id);
 
     // Persist size if provided
     if let Some(size) = expected_size {
@@ -676,11 +737,19 @@ pub async fn commit_cache(
 mod tests {
     use super::*;
     use crate::storage::{BlobDownloadStream, BlobStore, BlobUploadPayload, PresignedUrl};
+    use crate::{api::proxy::ProxyHttpClient, config::DatabaseDriver, http::AppState};
     use async_trait::async_trait;
+    use axum::{
+        Json,
+        extract::{Path, State},
+    };
+    use serde_json::json;
+    use sqlx::any::AnyPoolOptions;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
+    use tokio::time::sleep;
     use url::Url;
 
     #[derive(Clone, Default)]
@@ -699,6 +768,73 @@ mod tests {
 
         fn call_count(&self) -> usize {
             self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct FinalizeStore {
+        finalized: Arc<AtomicUsize>,
+    }
+
+    impl FinalizeStore {
+        fn finalized_count(&self) -> usize {
+            self.finalized.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl BlobStore for FinalizeStore {
+        async fn create_multipart(&self, _key: &str) -> anyhow::Result<String> {
+            unimplemented!("not required for tests")
+        }
+
+        async fn upload_part(
+            &self,
+            _key: &str,
+            _upload_id: &str,
+            _part_number: i32,
+            _body: BlobUploadPayload,
+        ) -> anyhow::Result<String> {
+            unimplemented!("not required for tests")
+        }
+
+        async fn complete_multipart(
+            &self,
+            _key: &str,
+            _upload_id: &str,
+            _parts: Vec<(i32, String)>,
+        ) -> anyhow::Result<()> {
+            self.finalized.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn presign_get(
+            &self,
+            _key: &str,
+            _ttl: Duration,
+        ) -> anyhow::Result<Option<PresignedUrl>> {
+            Ok(None)
+        }
+
+        async fn get(&self, _key: &str) -> anyhow::Result<Option<BlobDownloadStream>> {
+            Ok(None)
+        }
+
+        async fn delete(&self, _key: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Clone)]
+    struct DummyProxyClient;
+
+    #[async_trait]
+    impl ProxyHttpClient for DummyProxyClient {
+        async fn execute(
+            &self,
+            _request: axum::http::Request<axum::body::Body>,
+        ) -> std::result::Result<axum::response::Response, axum::BoxError> {
+            panic!("proxy client should not be used in tests");
         }
     }
 
@@ -861,5 +997,119 @@ mod tests {
         } else {
             panic!("unexpected error variant");
         }
+    }
+
+    #[tokio::test]
+    async fn commit_waits_for_in_flight_parts() {
+        sqlx::any::install_default_drivers();
+        let pool = AnyPoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect sqlite");
+        sqlx::migrate!("./migrations/sqlite")
+            .run(&pool)
+            .await
+            .expect("run migrations");
+
+        let store = Arc::new(FinalizeStore::default());
+        let state = AppState {
+            pool: pool.clone(),
+            store: store.clone() as Arc<dyn BlobStore>,
+            enable_direct: false,
+            proxy_client: Arc::new(DummyProxyClient) as Arc<dyn ProxyHttpClient>,
+            database_driver: DatabaseDriver::Sqlite,
+        };
+
+        let entry = meta::create_entry(
+            &pool,
+            DatabaseDriver::Sqlite,
+            "org",
+            "repo",
+            "key",
+            "v1",
+            "_",
+            "storage",
+        )
+        .await
+        .expect("create entry");
+        let upload_id = Uuid::new_v4().to_string();
+        meta::upsert_upload(
+            &pool,
+            DatabaseDriver::Sqlite,
+            entry.id,
+            &upload_id,
+            "reserved",
+        )
+        .await
+        .expect("create upload");
+        let uploading = meta::transition_upload_state(
+            &pool,
+            DatabaseDriver::Sqlite,
+            &upload_id,
+            &["reserved"],
+            "uploading",
+        )
+        .await
+        .expect("transition to uploading");
+        assert!(uploading);
+
+        meta::reserve_part(&pool, DatabaseDriver::Sqlite, &upload_id, 0, Some(0), 3)
+            .await
+            .expect("reserve part");
+        meta::begin_part_upload(&pool, DatabaseDriver::Sqlite, &upload_id)
+            .await
+            .expect("begin part upload");
+
+        let commit_state = state.clone();
+        let cache_id = entry.id.to_string();
+        let commit_handle = tokio::spawn(async move {
+            commit_cache(
+                State(commit_state),
+                Path(cache_id),
+                Json(json!({ "size": 3 })),
+            )
+            .await
+        });
+
+        sleep(Duration::from_millis(100)).await;
+        assert!(!commit_handle.is_finished(), "commit should wait for parts");
+
+        meta::complete_part(
+            &pool,
+            DatabaseDriver::Sqlite,
+            &upload_id,
+            0,
+            Some(0),
+            "etag",
+        )
+        .await
+        .expect("complete part");
+        let back_to_reserved = meta::transition_upload_state(
+            &pool,
+            DatabaseDriver::Sqlite,
+            &upload_id,
+            &["uploading"],
+            "reserved",
+        )
+        .await
+        .expect("transition to reserved after upload");
+        assert!(back_to_reserved);
+        meta::finish_part_upload(&pool, DatabaseDriver::Sqlite, &upload_id)
+            .await
+            .expect("finish part upload");
+
+        let status = commit_handle
+            .await
+            .expect("join commit task")
+            .expect("commit result");
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(store.finalized_count(), 1);
+
+        let upload_status = meta::get_upload_status(&pool, DatabaseDriver::Sqlite, &upload_id)
+            .await
+            .expect("fetch upload status");
+        assert_eq!(upload_status.active_part_count, 0);
+        assert!(!upload_status.pending_finalize);
     }
 }

@@ -1440,6 +1440,7 @@ dependencies = [
  "hyper 1.7.0",
  "hyper-rustls 0.27.7",
  "hyper-util",
+ "once_cell",
  "percent-encoding",
  "pin-project-lite",
  "prost 0.13.5",
