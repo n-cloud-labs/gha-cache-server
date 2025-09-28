@@ -53,13 +53,64 @@ pub async fn put_upload(
 
     let part_no = i32::try_from(chunk_index + 1)
         .map_err(|_| ApiError::BadRequest("invalid chunk index".into()))?;
+    let ready = meta::transition_upload_state(
+        &st.pool,
+        st.database_driver,
+        &upload_id,
+        &["reserved", "ready"],
+        "uploading",
+    )
+    .await?;
+    if !ready {
+        return Err(ApiError::BadRequest(
+            "upload is not ready to accept more parts".into(),
+        ));
+    }
     let bs = body_to_blob_payload(body);
-    let etag = st
+    let etag = match st
         .store
         .upload_part(&storage_key, &upload_id, part_no, bs)
         .await
-        .map_err(|e| ApiError::S3(format!("{e}")))?;
-    meta::add_part(&st.pool, st.database_driver, &upload_id, part_no, &etag).await?;
+    {
+        Ok(etag) => etag,
+        Err(err) => {
+            let _ = meta::transition_upload_state(
+                &st.pool,
+                st.database_driver,
+                &upload_id,
+                &["uploading"],
+                "ready",
+            )
+            .await;
+            return Err(ApiError::S3(format!("{err}")));
+        }
+    };
+    if let Err(err) = meta::add_part(&st.pool, st.database_driver, &upload_id, part_no, &etag).await
+    {
+        let _ = meta::transition_upload_state(
+            &st.pool,
+            st.database_driver,
+            &upload_id,
+            &["uploading"],
+            "ready",
+        )
+        .await;
+        return Err(err.into());
+    }
+
+    let ready = meta::transition_upload_state(
+        &st.pool,
+        st.database_driver,
+        &upload_id,
+        &["uploading"],
+        "ready",
+    )
+    .await?;
+    if !ready {
+        return Err(ApiError::Internal(
+            "failed to finalize upload part because state changed".into(),
+        ));
+    }
 
     Ok(created_response())
 }

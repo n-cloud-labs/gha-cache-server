@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use crate::api::proto::cache;
 use crate::api::types::*;
-use crate::api::upload::{normalize_key, normalize_version};
+use crate::api::upload::{ensure_all_parts_uploaded, normalize_key, normalize_version};
 use crate::db::rewrite_placeholders;
 use crate::error::{ApiError, Result};
 use crate::http::AppState;
@@ -315,11 +315,65 @@ pub async fn finalize_cache_entry_upload(
         .await?;
     let upload_id: String = rec.try_get("upload_id")?;
     let storage_key: String = rec.try_get("storage_key")?;
+    let reserved = meta::transition_upload_state(
+        &st.pool,
+        st.database_driver,
+        &upload_id,
+        &["reserved", "ready"],
+        "finalizing",
+    )
+    .await?;
+    if !reserved {
+        return Err(ApiError::BadRequest(
+            "upload is still receiving parts".into(),
+        ));
+    }
+
     let parts = crate::meta::get_parts(&st.pool, st.database_driver, &upload_id).await?;
-    st.store
+    if let Err(err) = ensure_all_parts_uploaded(&parts) {
+        let _ = meta::transition_upload_state(
+            &st.pool,
+            st.database_driver,
+            &upload_id,
+            &["finalizing"],
+            "ready",
+        )
+        .await;
+        return Err(err);
+    }
+
+    let complete_result = st
+        .store
         .complete_multipart(&storage_key, &upload_id, parts)
-        .await
-        .map_err(|e| ApiError::S3(format!("{e}")))?;
+        .await;
+    match complete_result {
+        Ok(()) => {
+            let finalized = meta::transition_upload_state(
+                &st.pool,
+                st.database_driver,
+                &upload_id,
+                &["finalizing"],
+                "completed",
+            )
+            .await?;
+            if !finalized {
+                return Err(ApiError::Internal(
+                    "failed to record completed upload state".into(),
+                ));
+            }
+        }
+        Err(err) => {
+            let _ = meta::transition_upload_state(
+                &st.pool,
+                st.database_driver,
+                &upload_id,
+                &["finalizing"],
+                "ready",
+            )
+            .await;
+            return Err(ApiError::S3(format!("{err}")));
+        }
+    }
 
     Ok(TwirpResponse::new(
         TwirpFinalizeResp {
