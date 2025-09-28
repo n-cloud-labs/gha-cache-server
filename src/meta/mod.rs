@@ -1,13 +1,20 @@
 use chrono::{DateTime, Utc};
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use sqlx::{AnyPool, Row, Transaction};
+use sqlx::{AnyPool, Error, Row, Transaction};
+use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::io;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::{sync::Notify, time};
 use uuid::Uuid;
 
 use crate::config::DatabaseDriver;
 use crate::db::rewrite_placeholders;
+
+static FINALIZE_WAITERS: Lazy<Mutex<HashMap<String, Arc<Notify>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CacheEntry {
@@ -31,6 +38,15 @@ pub struct UploadRow {
     pub entry_id: Option<Uuid>,
     pub upload_id: String,
     pub state: String,
+    pub active_part_count: i64,
+    pub pending_finalize: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct UploadStatus {
+    pub state: String,
+    pub active_part_count: i64,
+    pub pending_finalize: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -88,6 +104,8 @@ fn map_upload_row(row: sqlx::any::AnyRow) -> Result<UploadRow, sqlx::Error> {
         entry_id,
         upload_id: row.try_get("upload_id")?,
         state: row.try_get("state")?,
+        active_part_count: row.try_get("active_part_count")?,
+        pending_finalize: try_get_bool(&row, "pending_finalize")?,
     })
 }
 
@@ -97,11 +115,183 @@ async fn fetch_upload(
     upload_id: &str,
 ) -> Result<UploadRow, sqlx::Error> {
     let query = rewrite_placeholders(
-        "SELECT id, entry_id, upload_id, state FROM cache_uploads WHERE upload_id = ?",
+        "SELECT id, entry_id, upload_id, state, active_part_count, pending_finalize FROM cache_uploads WHERE upload_id = ?",
         driver,
     );
     let row = sqlx::query(&query).bind(upload_id).fetch_one(pool).await?;
     map_upload_row(row)
+}
+
+pub fn register_finalize_waiter(upload_id: &str) -> Arc<Notify> {
+    let mut waiters = FINALIZE_WAITERS
+        .lock()
+        .expect("finalize waiters lock poisoned");
+    waiters
+        .entry(upload_id.to_string())
+        .or_insert_with(|| Arc::new(Notify::new()))
+        .clone()
+}
+
+pub fn notify_finalize_waiters(upload_id: &str) {
+    let notify = {
+        let mut waiters = FINALIZE_WAITERS
+            .lock()
+            .expect("finalize waiters lock poisoned");
+        waiters.remove(upload_id)
+    };
+    if let Some(notifier) = notify {
+        notifier.notify_waiters();
+    }
+}
+
+pub fn clear_finalize_waiter(upload_id: &str) {
+    let mut waiters = FINALIZE_WAITERS
+        .lock()
+        .expect("finalize waiters lock poisoned");
+    waiters.remove(upload_id);
+}
+
+pub async fn get_upload_status(
+    pool: &AnyPool,
+    driver: DatabaseDriver,
+    upload_id: &str,
+) -> Result<UploadStatus, sqlx::Error> {
+    let query = rewrite_placeholders(
+        "SELECT state, active_part_count, pending_finalize FROM cache_uploads WHERE upload_id = ?",
+        driver,
+    );
+    let row = sqlx::query(&query).bind(upload_id).fetch_one(pool).await?;
+    Ok(UploadStatus {
+        state: row.try_get("state")?,
+        active_part_count: row.try_get("active_part_count")?,
+        pending_finalize: try_get_bool(&row, "pending_finalize")?,
+    })
+}
+
+pub async fn wait_for_no_active_parts(
+    pool: &AnyPool,
+    driver: DatabaseDriver,
+    upload_id: &str,
+    notifier: Arc<Notify>,
+) -> Result<(), sqlx::Error> {
+    loop {
+        let status = get_upload_status(pool, driver, upload_id).await?;
+        if status.active_part_count == 0 && status.state != "uploading" {
+            break;
+        }
+        tokio::select! {
+            _ = notifier.notified() => {},
+            _ = time::sleep(Duration::from_millis(50)) => {},
+        }
+    }
+    Ok(())
+}
+
+async fn increment_active_part_count(
+    pool: &AnyPool,
+    driver: DatabaseDriver,
+    upload_id: &str,
+) -> Result<(), sqlx::Error> {
+    let now = Utc::now().timestamp();
+    let query = rewrite_placeholders(
+        "UPDATE cache_uploads SET active_part_count = active_part_count + 1, updated_at = ? WHERE upload_id = ?",
+        driver,
+    );
+    let result = sqlx::query(&query)
+        .bind(now)
+        .bind(upload_id)
+        .execute(pool)
+        .await?;
+    if result.rows_affected() == 0 {
+        return Err(sqlx::Error::RowNotFound);
+    }
+    Ok(())
+}
+
+async fn decrement_active_part_count(
+    pool: &AnyPool,
+    driver: DatabaseDriver,
+    upload_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let mut tx: Transaction<'_, sqlx::Any> = pool.begin().await?;
+    let select_query = rewrite_placeholders(
+        "SELECT active_part_count, pending_finalize FROM cache_uploads WHERE upload_id = ?",
+        driver,
+    );
+    let row = sqlx::query(&select_query)
+        .bind(upload_id)
+        .fetch_one(&mut *tx)
+        .await?;
+    let current: i64 = row.try_get("active_part_count")?;
+    let pending: bool = try_get_bool(&row, "pending_finalize")?;
+    let new_value = if current > 0 { current - 1 } else { 0 };
+    let now = Utc::now().timestamp();
+    let update_query = rewrite_placeholders(
+        "UPDATE cache_uploads SET active_part_count = ?, updated_at = ? WHERE upload_id = ?",
+        driver,
+    );
+    sqlx::query(&update_query)
+        .bind(new_value)
+        .bind(now)
+        .bind(upload_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(pending && new_value == 0)
+}
+
+pub async fn begin_part_upload(
+    pool: &AnyPool,
+    driver: DatabaseDriver,
+    upload_id: &str,
+) -> Result<(), sqlx::Error> {
+    increment_active_part_count(pool, driver, upload_id).await
+}
+
+pub async fn finish_part_upload(
+    pool: &AnyPool,
+    driver: DatabaseDriver,
+    upload_id: &str,
+) -> Result<(), sqlx::Error> {
+    let should_notify = decrement_active_part_count(pool, driver, upload_id).await?;
+    if should_notify {
+        notify_finalize_waiters(upload_id);
+    }
+    Ok(())
+}
+
+pub async fn set_pending_finalize(
+    pool: &AnyPool,
+    driver: DatabaseDriver,
+    upload_id: &str,
+    pending: bool,
+) -> Result<(), sqlx::Error> {
+    let now = Utc::now().timestamp();
+    let query = rewrite_placeholders(
+        "UPDATE cache_uploads SET pending_finalize = ?, updated_at = ? WHERE upload_id = ?",
+        driver,
+    );
+    let result = sqlx::query(&query)
+        .bind(pending)
+        .bind(now)
+        .bind(upload_id)
+        .execute(pool)
+        .await?;
+    if result.rows_affected() == 0 {
+        return Err(sqlx::Error::RowNotFound);
+    }
+    Ok(())
+}
+
+fn try_get_bool(row: &sqlx::any::AnyRow, column: &str) -> Result<bool, Error> {
+    match row.try_get::<bool, _>(column) {
+        Ok(value) => Ok(value),
+        Err(Error::ColumnDecode { .. }) => {
+            let numeric: i64 = row.try_get(column)?;
+            Ok(numeric != 0)
+        }
+        Err(other) => Err(other),
+    }
 }
 
 async fn fetch_entry(
