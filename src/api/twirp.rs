@@ -329,8 +329,8 @@ pub async fn finalize_cache_entry_upload(
         ));
     }
 
-    let parts = crate::meta::get_parts(&st.pool, st.database_driver, &upload_id).await?;
-    if let Err(err) = ensure_all_parts_uploaded(&parts) {
+    let parts = crate::meta::get_completed_parts(&st.pool, st.database_driver, &upload_id).await?;
+    if let Err(err) = ensure_all_parts_uploaded(&parts, None) {
         let _ = meta::transition_upload_state(
             &st.pool,
             st.database_driver,
@@ -344,7 +344,14 @@ pub async fn finalize_cache_entry_upload(
 
     let complete_result = st
         .store
-        .complete_multipart(&storage_key, &upload_id, parts)
+        .complete_multipart(
+            &storage_key,
+            &upload_id,
+            parts
+                .iter()
+                .map(|part| (part.part_number, part.etag.clone()))
+                .collect(),
+        )
         .await;
     match complete_result {
         Ok(()) => {
