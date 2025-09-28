@@ -175,6 +175,27 @@ impl FsStore {
         }
         Ok(())
     }
+
+    fn is_cross_device_error(error: &std::io::Error) -> bool {
+        #[cfg(unix)]
+        {
+            const EXDEV: i32 = 18;
+            if error.raw_os_error() == Some(EXDEV) {
+                return true;
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            const ERROR_NOT_SAME_DEVICE: i32 = 17;
+            if error.raw_os_error() == Some(ERROR_NOT_SAME_DEVICE) {
+                return true;
+            }
+        }
+
+        let _ = error;
+        false
+    }
 }
 
 #[async_trait]
@@ -285,9 +306,22 @@ impl BlobStore for FsStore {
             self.ensure_dir_mode(parent).await?;
         }
 
-        fs::rename(&staging_path, &destination)
-            .await
-            .with_context(|| format!("failed to finalize upload to {}", destination.display()))?;
+        let finalize_err = || format!("failed to finalize upload to {}", destination.display());
+        match fs::rename(&staging_path, &destination).await {
+            Ok(()) => {}
+            Err(err) => {
+                if Self::is_cross_device_error(&err) {
+                    fs::copy(&staging_path, &destination)
+                        .await
+                        .with_context(finalize_err)?;
+                    fs::remove_file(&staging_path).await.with_context(|| {
+                        format!("failed to remove staging file {}", staging_path.display())
+                    })?;
+                } else {
+                    return Err(err).with_context(finalize_err);
+                }
+            }
+        }
         self.ensure_file_mode(&destination).await?;
 
         let upload_dir = self.upload_dir(upload_id);
