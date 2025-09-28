@@ -2,7 +2,7 @@ CREATE TABLE IF NOT EXISTS cache_upload_parts (
     upload_id VARCHAR(255) NOT NULL,
     part_index INT NOT NULL,
     part_number INT NOT NULL,
-    offset BIGINT NULL,
+    `offset` BIGINT NULL,
     size BIGINT NOT NULL,
     etag TEXT NULL,
     state VARCHAR(32) NOT NULL CHECK (state IN ('pending','completed')),
