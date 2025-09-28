@@ -315,20 +315,15 @@ pub async fn finalize_cache_entry_upload(
         .await?;
     let upload_id: String = rec.try_get("upload_id")?;
     let storage_key: String = rec.try_get("storage_key")?;
-    let notifier = meta::register_finalize_waiter(&upload_id);
     if let Err(err) =
         meta::set_pending_finalize(&st.pool, st.database_driver, &upload_id, true).await
     {
-        meta::clear_finalize_waiter(&upload_id);
         return Err(err.into());
     }
 
-    if let Err(err) =
-        meta::wait_for_no_active_parts(&st.pool, st.database_driver, &upload_id, notifier.clone())
-            .await
+    if let Err(err) = meta::wait_for_no_active_parts(&st.pool, st.database_driver, &upload_id).await
     {
         let _ = meta::set_pending_finalize(&st.pool, st.database_driver, &upload_id, false).await;
-        meta::clear_finalize_waiter(&upload_id);
         return Err(err.into());
     }
 
@@ -342,7 +337,6 @@ pub async fn finalize_cache_entry_upload(
     .await?;
     if !reserved {
         let _ = meta::set_pending_finalize(&st.pool, st.database_driver, &upload_id, false).await;
-        meta::clear_finalize_waiter(&upload_id);
         return Err(ApiError::BadRequest(
             "upload is still receiving parts".into(),
         ));
@@ -359,7 +353,6 @@ pub async fn finalize_cache_entry_upload(
         )
         .await;
         let _ = meta::set_pending_finalize(&st.pool, st.database_driver, &upload_id, false).await;
-        meta::clear_finalize_waiter(&upload_id);
         return Err(err);
     }
 
@@ -387,7 +380,6 @@ pub async fn finalize_cache_entry_upload(
             if !finalized {
                 let _ = meta::set_pending_finalize(&st.pool, st.database_driver, &upload_id, false)
                     .await;
-                meta::clear_finalize_waiter(&upload_id);
                 return Err(ApiError::Internal(
                     "failed to record completed upload state".into(),
                 ));
@@ -404,13 +396,11 @@ pub async fn finalize_cache_entry_upload(
             .await;
             let _ =
                 meta::set_pending_finalize(&st.pool, st.database_driver, &upload_id, false).await;
-            meta::clear_finalize_waiter(&upload_id);
             return Err(ApiError::S3(format!("{err}")));
         }
     }
 
     let _ = meta::set_pending_finalize(&st.pool, st.database_driver, &upload_id, false).await;
-    meta::clear_finalize_waiter(&upload_id);
 
     Ok(TwirpResponse::new(
         TwirpFinalizeResp {
