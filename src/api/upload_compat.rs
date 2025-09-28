@@ -45,7 +45,7 @@ pub async fn put_upload(
     let upload_id: String = rec.try_get("upload_id")?;
     let storage_key: String = rec.try_get("storage_key")?;
 
-    let status = meta::get_upload_status(&st.pool, st.database_driver, &upload_id).await?;
+    let mut status = meta::get_upload_status(&st.pool, st.database_driver, &upload_id).await?;
     if status.pending_finalize {
         return Err(ApiError::BadRequest("upload is finalizing".into()));
     }
@@ -59,28 +59,11 @@ pub async fn put_upload(
     let part_no = i32::try_from(chunk_index + 1)
         .map_err(|_| ApiError::BadRequest("invalid chunk index".into()))?;
     let size = parse_content_length(&headers)?;
-    let mut transitioned_to_uploading = false;
-    let ready = if status.state == "uploading" {
-        true
-    } else {
-        let ready = meta::transition_upload_state(
-            &st.pool,
-            st.database_driver,
-            &upload_id,
-            &["reserved", "ready"],
-            "uploading",
-        )
-        .await?;
-        if ready {
-            transitioned_to_uploading = true;
-        }
-        ready
-    };
-    if !ready {
-        return Err(ApiError::BadRequest(
-            "upload is not ready to accept more parts".into(),
-        ));
+    if status.state != "uploading" {
+        meta::transition_to_uploading(&st.pool, st.database_driver, &upload_id, &mut status)
+            .await?;
     }
+
     if let Err(err) = meta::reserve_part(
         &st.pool,
         st.database_driver,
@@ -91,30 +74,10 @@ pub async fn put_upload(
     )
     .await
     {
-        if transitioned_to_uploading {
-            let _ = meta::transition_upload_state(
-                &st.pool,
-                st.database_driver,
-                &upload_id,
-                &["uploading"],
-                "ready",
-            )
-            .await;
-        }
         return Err(err.into());
     }
 
     if let Err(err) = meta::begin_part_upload(&st.pool, st.database_driver, &upload_id).await {
-        if transitioned_to_uploading {
-            let _ = meta::transition_upload_state(
-                &st.pool,
-                st.database_driver,
-                &upload_id,
-                &["uploading"],
-                "ready",
-            )
-            .await;
-        }
         return Err(err.into());
     }
 
