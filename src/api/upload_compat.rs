@@ -1,13 +1,11 @@
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use base64::{Engine as _, engine::general_purpose};
 use serde::Deserialize;
 use sqlx::Row;
-use std::convert::TryInto;
 use uuid::Uuid;
 
-use crate::api::upload::body_to_blob_payload;
+use crate::api::upload::{body_to_blob_payload, chunk_index_from_block_id};
 use crate::db::rewrite_placeholders;
 use crate::error::{ApiError, Result};
 use crate::http::AppState;
@@ -27,6 +25,7 @@ pub async fn put_upload(
     State(st): State<AppState>,
     Path(id): Path<String>,
     Query(query): Query<UploadQuery>,
+    headers: HeaderMap,
     body: axum::body::Body,
 ) -> Result<Response> {
     let uuid = Uuid::parse_str(&id).map_err(|_| ApiError::BadRequest("invalid cacheId".into()))?;
@@ -46,13 +45,15 @@ pub async fn put_upload(
     let upload_id: String = rec.try_get("upload_id")?;
     let storage_key: String = rec.try_get("storage_key")?;
 
-    let chunk_index = match query.blockid.as_deref() {
-        Some(block_id) => chunk_index_from_block_id(block_id)?,
-        None => 0,
-    };
+    let block_id = query
+        .blockid
+        .as_deref()
+        .ok_or_else(|| ApiError::BadRequest("missing blockId query parameter".into()))?;
+    let chunk_index = chunk_index_from_block_id(block_id)?;
 
     let part_no = i32::try_from(chunk_index + 1)
         .map_err(|_| ApiError::BadRequest("invalid chunk index".into()))?;
+    let size = parse_content_length(&headers)?;
     let ready = meta::transition_upload_state(
         &st.pool,
         st.database_driver,
@@ -66,6 +67,27 @@ pub async fn put_upload(
             "upload is not ready to accept more parts".into(),
         ));
     }
+    if let Err(err) = meta::reserve_part(
+        &st.pool,
+        st.database_driver,
+        &upload_id,
+        part_no - 1,
+        None,
+        size,
+    )
+    .await
+    {
+        let _ = meta::transition_upload_state(
+            &st.pool,
+            st.database_driver,
+            &upload_id,
+            &["uploading"],
+            "ready",
+        )
+        .await;
+        return Err(err.into());
+    }
+
     let bs = body_to_blob_payload(body);
     let etag = match st
         .store
@@ -85,7 +107,15 @@ pub async fn put_upload(
             return Err(ApiError::S3(format!("{err}")));
         }
     };
-    if let Err(err) = meta::add_part(&st.pool, st.database_driver, &upload_id, part_no, &etag).await
+    if let Err(err) = meta::complete_part(
+        &st.pool,
+        st.database_driver,
+        &upload_id,
+        part_no - 1,
+        None,
+        &etag,
+    )
+    .await
     {
         let _ = meta::transition_upload_state(
             &st.pool,
@@ -115,33 +145,20 @@ pub async fn put_upload(
     Ok(created_response())
 }
 
-fn chunk_index_from_block_id(block_id: &str) -> Result<u32> {
-    let decoded = general_purpose::STANDARD
-        .decode(block_id)
-        .map_err(|_| ApiError::BadRequest("invalid block id".into()))?;
-
-    match decoded.len() {
-        64 => {
-            if decoded.len() < 20 {
-                return Err(ApiError::BadRequest("invalid block id".into()));
-            }
-            let bytes: [u8; 4] = decoded[16..20]
-                .try_into()
-                .map_err(|_| ApiError::BadRequest("invalid block id".into()))?;
-            Ok(u32::from_be_bytes(bytes))
-        }
-        48 => {
-            let decoded_str = std::str::from_utf8(&decoded)
-                .map_err(|_| ApiError::BadRequest("invalid block id".into()))?;
-            let index_str = decoded_str
-                .get(36..)
-                .ok_or_else(|| ApiError::BadRequest("invalid block id".into()))?;
-            index_str
-                .parse::<u32>()
-                .map_err(|_| ApiError::BadRequest("invalid block id".into()))
-        }
-        _ => Err(ApiError::BadRequest("invalid block id".into())),
+fn parse_content_length(headers: &HeaderMap) -> Result<i64> {
+    let value = headers
+        .get(axum::http::header::CONTENT_LENGTH)
+        .ok_or_else(|| ApiError::BadRequest("missing Content-Length header".into()))?;
+    let value = value
+        .to_str()
+        .map_err(|_| ApiError::BadRequest("invalid Content-Length header".into()))?;
+    let size = value
+        .parse::<i64>()
+        .map_err(|_| ApiError::BadRequest("invalid Content-Length header".into()))?;
+    if size <= 0 {
+        return Err(ApiError::BadRequest("invalid Content-Length header".into()));
     }
+    Ok(size)
 }
 
 fn created_response() -> Response {

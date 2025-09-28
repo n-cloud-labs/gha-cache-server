@@ -176,3 +176,68 @@ async fn delete_entry_removes_row_and_cascades_uploads() {
             .expect("count uploads");
     assert_eq!(remaining_uploads, 0);
 }
+
+#[tokio::test]
+async fn concurrent_part_updates_are_ordered() {
+    let pool = setup_pool().await;
+    let entry = create_entry(&pool, "concurrent").await;
+    let upload_id = Uuid::new_v4().to_string();
+
+    let upload = meta::upsert_upload(
+        &pool,
+        DatabaseDriver::Sqlite,
+        entry.id,
+        &upload_id,
+        "reserved",
+    )
+    .await
+    .expect("create upload");
+
+    assert_eq!(upload.upload_id, upload_id);
+
+    let first = {
+        let pool = &pool;
+        let upload = upload_id.clone();
+        async move {
+            meta::reserve_part(pool, DatabaseDriver::Sqlite, &upload, 0, Some(0), 10)
+                .await
+                .expect("reserve part 0");
+            meta::complete_part(pool, DatabaseDriver::Sqlite, &upload, 0, Some(0), "etag-0")
+                .await
+                .expect("complete part 0");
+        }
+    };
+    let second = {
+        let pool = &pool;
+        let upload = upload_id.clone();
+        async move {
+            meta::reserve_part(pool, DatabaseDriver::Sqlite, &upload, 1, Some(10), 7)
+                .await
+                .expect("reserve part 1");
+            meta::complete_part(pool, DatabaseDriver::Sqlite, &upload, 1, Some(10), "etag-1")
+                .await
+                .expect("complete part 1");
+        }
+    };
+
+    tokio::join!(first, second);
+
+    meta::reserve_part(&pool, DatabaseDriver::Sqlite, &upload_id, 2, None, 3)
+        .await
+        .expect("reserve compat part");
+    meta::complete_part(&pool, DatabaseDriver::Sqlite, &upload_id, 2, None, "etag-2")
+        .await
+        .expect("complete compat part");
+
+    let parts = meta::get_completed_parts(&pool, DatabaseDriver::Sqlite, &upload_id)
+        .await
+        .expect("fetch parts");
+    assert_eq!(parts.len(), 3);
+    assert_eq!(parts[0].part_number, 1);
+    assert_eq!(parts[1].part_number, 2);
+    assert_eq!(parts[2].part_number, 3);
+    assert_eq!(parts[0].offset, 0);
+    assert_eq!(parts[1].offset, 10);
+    assert_eq!(parts[2].offset, 17);
+    assert_eq!(parts[2].size, 3);
+}

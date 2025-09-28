@@ -244,11 +244,10 @@ impl BlobStore for GcsStore {
         upload_id: &str,
         parts: Vec<(i32, String)>,
     ) -> Result<()> {
-        let mut numbers: Vec<i32> = parts.into_iter().map(|(n, _)| n).collect();
+        let numbers: Vec<i32> = parts.into_iter().map(|(n, _)| n).collect();
         if numbers.is_empty() {
             bail!("multipart upload must include at least one part");
         }
-        numbers.sort_unstable();
         let names = numbers
             .into_iter()
             .map(|n| self.part_object_name(upload_id, n))

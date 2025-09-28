@@ -1,4 +1,4 @@
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -25,6 +25,14 @@ const MAX_CACHE_VERSION_LENGTH: usize = 512;
 #[derive(Debug, Deserialize)]
 pub struct ListCachesQuery {
     key: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct UploadChunkQuery {
+    #[serde(default)]
+    pub _comp: Option<String>,
+    #[serde(default, alias = "blockId", alias = "blockID")]
+    pub block_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -315,24 +323,34 @@ pub async fn reserve_cache(
 pub async fn upload_chunk(
     State(st): State<AppState>,
     Path(id): Path<String>,
+    Query(query): Query<UploadChunkQuery>,
+    headers: HeaderMap,
     body: axum::body::Body,
 ) -> Result<StatusCode> {
     let uuid = Uuid::parse_str(&id).map_err(|_| ApiError::BadRequest("invalid cacheId".into()))?;
-    let query = rewrite_placeholders(
+    let sql = rewrite_placeholders(
         "SELECT upload_id, storage_key FROM cache_uploads u JOIN cache_entries e ON e.id = u.entry_id WHERE e.id = ?",
         st.database_driver,
     );
-    let rec = sqlx::query(&query)
+    let rec = sqlx::query(&sql)
         .bind(uuid.to_string())
         .fetch_one(&st.pool)
         .await?;
     let upload_id: String = rec.try_get("upload_id")?;
     let storage_key: String = rec.try_get("storage_key")?;
 
-    // We don't actually need offsets here because we map each PATCH to an S3 part in order.
-    let next_part = 1 + meta::get_parts(&st.pool, st.database_driver, &upload_id)
-        .await?
-        .len() as i32;
+    let block_id = query
+        .block_id
+        .as_deref()
+        .ok_or_else(|| ApiError::BadRequest("missing blockId query parameter".into()))?;
+    let chunk_index = chunk_index_from_block_id(block_id)?;
+    let part_index = i32::try_from(chunk_index)
+        .map_err(|_| ApiError::BadRequest("invalid chunk index".into()))?;
+    let part_number = part_index + 1;
+    let (offset, size, _) = parse_content_range(&headers)?;
+    if size <= 0 {
+        return Err(ApiError::BadRequest("chunk size must be positive".into()));
+    }
 
     let ready = meta::transition_upload_state(
         &st.pool,
@@ -348,10 +366,31 @@ pub async fn upload_chunk(
         ));
     }
 
+    if let Err(err) = meta::reserve_part(
+        &st.pool,
+        st.database_driver,
+        &upload_id,
+        part_index,
+        Some(offset),
+        size,
+    )
+    .await
+    {
+        let _ = meta::transition_upload_state(
+            &st.pool,
+            st.database_driver,
+            &upload_id,
+            &["uploading"],
+            "ready",
+        )
+        .await;
+        return Err(err.into());
+    }
+
     let bs = body_to_blob_payload(body);
     let etag = match st
         .store
-        .upload_part(&storage_key, &upload_id, next_part, bs)
+        .upload_part(&storage_key, &upload_id, part_number, bs)
         .await
     {
         Ok(etag) => etag,
@@ -367,8 +406,15 @@ pub async fn upload_chunk(
             return Err(ApiError::S3(format!("{err}")));
         }
     };
-    if let Err(err) =
-        meta::add_part(&st.pool, st.database_driver, &upload_id, next_part, &etag).await
+    if let Err(err) = meta::complete_part(
+        &st.pool,
+        st.database_driver,
+        &upload_id,
+        part_index,
+        Some(offset),
+        &etag,
+    )
+    .await
     {
         let _ = meta::transition_upload_state(
             &st.pool,
@@ -398,22 +444,130 @@ pub async fn upload_chunk(
     Ok(StatusCode::OK)
 }
 
+fn parse_content_range(headers: &HeaderMap) -> Result<(i64, i64, Option<i64>)> {
+    let value = headers
+        .get(axum::http::header::CONTENT_RANGE)
+        .ok_or_else(|| ApiError::BadRequest("missing Content-Range header".into()))?;
+    let value = value
+        .to_str()
+        .map_err(|_| ApiError::BadRequest("invalid Content-Range header".into()))?;
+    let value = value
+        .strip_prefix("bytes ")
+        .ok_or_else(|| ApiError::BadRequest("invalid Content-Range header".into()))?;
+    let mut parts = value.split('/');
+    let range = parts
+        .next()
+        .ok_or_else(|| ApiError::BadRequest("invalid Content-Range header".into()))?;
+    let total = parts.next();
+    if parts.next().is_some() {
+        return Err(ApiError::BadRequest("invalid Content-Range header".into()));
+    }
+
+    let mut bounds = range.split('-');
+    let start = bounds
+        .next()
+        .ok_or_else(|| ApiError::BadRequest("invalid Content-Range header".into()))?
+        .parse::<i64>()
+        .map_err(|_| ApiError::BadRequest("invalid Content-Range header".into()))?;
+    let end = bounds
+        .next()
+        .ok_or_else(|| ApiError::BadRequest("invalid Content-Range header".into()))?
+        .parse::<i64>()
+        .map_err(|_| ApiError::BadRequest("invalid Content-Range header".into()))?;
+    if bounds.next().is_some() || start < 0 || end < start {
+        return Err(ApiError::BadRequest("invalid Content-Range header".into()));
+    }
+
+    let length = end - start + 1;
+    if length <= 0 {
+        return Err(ApiError::BadRequest("invalid Content-Range header".into()));
+    }
+
+    let total = match total {
+        Some("*") | None => None,
+        Some(raw_total) => Some(
+            raw_total
+                .parse::<i64>()
+                .map_err(|_| ApiError::BadRequest("invalid Content-Range header".into()))?,
+        ),
+    };
+
+    Ok((start, length, total))
+}
+
+pub(crate) fn chunk_index_from_block_id(block_id: &str) -> Result<u32> {
+    let decoded = general_purpose::STANDARD
+        .decode(block_id)
+        .map_err(|_| ApiError::BadRequest("invalid block id".into()))?;
+
+    match decoded.len() {
+        64 => {
+            if decoded.len() < 20 {
+                return Err(ApiError::BadRequest("invalid block id".into()));
+            }
+            let bytes: [u8; 4] = decoded[16..20]
+                .try_into()
+                .map_err(|_| ApiError::BadRequest("invalid block id".into()))?;
+            Ok(u32::from_be_bytes(bytes))
+        }
+        48 => {
+            let decoded_str = std::str::from_utf8(&decoded)
+                .map_err(|_| ApiError::BadRequest("invalid block id".into()))?;
+            let index_str = decoded_str
+                .get(36..)
+                .ok_or_else(|| ApiError::BadRequest("invalid block id".into()))?;
+            index_str
+                .parse::<u32>()
+                .map_err(|_| ApiError::BadRequest("invalid block id".into()))
+        }
+        _ => Err(ApiError::BadRequest("invalid block id".into())),
+    }
+}
+
 pub(crate) fn body_to_blob_payload(body: axum::body::Body) -> BlobUploadPayload {
     body.into_data_stream().map_err(anyhow::Error::from).boxed()
 }
 
-pub(crate) fn ensure_all_parts_uploaded(parts: &[(i32, String)]) -> Result<()> {
+pub(crate) fn ensure_all_parts_uploaded(
+    parts: &[meta::UploadPartRecord],
+    expected_size: Option<i64>,
+) -> Result<()> {
     if parts.is_empty() {
         return Err(ApiError::BadRequest(
             "multipart upload must include at least one part".into(),
         ));
     }
-    for (expected, (part_number, _)) in (1..).zip(parts.iter()) {
-        if *part_number != expected {
+    let mut expected_offset = 0i64;
+    for (index, part) in parts.iter().enumerate() {
+        let expected_index = index as i32;
+        let expected_part_number = expected_index + 1;
+        if part.part_index != expected_index {
             return Err(ApiError::BadRequest(format!(
-                "missing part {expected} before finalization"
+                "missing part {expected_part_number} before finalization"
             )));
         }
+        if part.offset != expected_offset {
+            return Err(ApiError::BadRequest(format!(
+                "unexpected offset for part {}",
+                part.part_number
+            )));
+        }
+        if part.size <= 0 {
+            return Err(ApiError::BadRequest(format!(
+                "invalid size recorded for part {}",
+                part.part_number
+            )));
+        }
+        expected_offset = expected_offset
+            .checked_add(part.size)
+            .ok_or_else(|| ApiError::BadRequest("upload size overflow".into()))?;
+    }
+    if let Some(total) = expected_size
+        && total != expected_offset
+    {
+        return Err(ApiError::BadRequest(
+            "uploaded parts do not match expected size".into(),
+        ));
     }
     Ok(())
 }
@@ -449,8 +603,9 @@ pub async fn commit_cache(
         ));
     }
 
-    let parts = meta::get_parts(&st.pool, st.database_driver, &upload_id).await?;
-    if let Err(err) = ensure_all_parts_uploaded(&parts) {
+    let expected_size = req.get("size").and_then(|v| v.as_i64());
+    let parts = meta::get_completed_parts(&st.pool, st.database_driver, &upload_id).await?;
+    if let Err(err) = ensure_all_parts_uploaded(&parts, expected_size) {
         let _ = meta::transition_upload_state(
             &st.pool,
             st.database_driver,
@@ -464,7 +619,14 @@ pub async fn commit_cache(
 
     let complete_result = st
         .store
-        .complete_multipart(&storage_key, &upload_id, parts)
+        .complete_multipart(
+            &storage_key,
+            &upload_id,
+            parts
+                .iter()
+                .map(|part| (part.part_number, part.etag.clone()))
+                .collect(),
+        )
         .await;
     match complete_result {
         Ok(()) => {
@@ -496,7 +658,7 @@ pub async fn commit_cache(
     }
 
     // Persist size if provided
-    if let Some(size) = req.get("size").and_then(|v| v.as_i64()) {
+    if let Some(size) = expected_size {
         let update_query = rewrite_placeholders(
             "UPDATE cache_entries SET size_bytes = ? WHERE id = ?",
             st.database_driver,
@@ -656,14 +818,44 @@ mod tests {
 
     #[test]
     fn ensure_all_parts_uploaded_accepts_contiguous_sequence() {
-        let parts = vec![(1, "etag-1".into()), (2, "etag-2".into())];
-        assert!(ensure_all_parts_uploaded(&parts).is_ok());
+        let parts = vec![
+            meta::UploadPartRecord {
+                part_index: 0,
+                part_number: 1,
+                offset: 0,
+                size: 10,
+                etag: "etag-1".into(),
+            },
+            meta::UploadPartRecord {
+                part_index: 1,
+                part_number: 2,
+                offset: 10,
+                size: 5,
+                etag: "etag-2".into(),
+            },
+        ];
+        assert!(ensure_all_parts_uploaded(&parts, Some(15)).is_ok());
     }
 
     #[test]
     fn ensure_all_parts_uploaded_rejects_gaps() {
-        let parts = vec![(1, "etag-1".into()), (3, "etag-3".into())];
-        let err = ensure_all_parts_uploaded(&parts).expect_err("gap should be rejected");
+        let parts = vec![
+            meta::UploadPartRecord {
+                part_index: 0,
+                part_number: 1,
+                offset: 0,
+                size: 10,
+                etag: "etag-1".into(),
+            },
+            meta::UploadPartRecord {
+                part_index: 2,
+                part_number: 3,
+                offset: 10,
+                size: 5,
+                etag: "etag-3".into(),
+            },
+        ];
+        let err = ensure_all_parts_uploaded(&parts, None).expect_err("gap should be rejected");
         if let ApiError::BadRequest(message) = err {
             assert!(message.contains("missing part 2"));
         } else {

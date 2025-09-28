@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{AnyPool, Row};
+use sqlx::{AnyPool, Row, Transaction};
 use std::convert::TryFrom;
 use std::io;
 use std::time::Duration;
@@ -30,15 +30,16 @@ pub struct UploadRow {
     pub id: Uuid,
     pub entry_id: Option<Uuid>,
     pub upload_id: String,
-    pub parts_json: serde_json::Value,
     pub state: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct UploadPart {
-    #[serde(rename = "partNumber")]
-    part_number: i32,
-    etag: String,
+#[derive(Clone, Debug)]
+pub struct UploadPartRecord {
+    pub part_index: i32,
+    pub part_number: i32,
+    pub offset: i64,
+    pub size: i64,
+    pub etag: String,
 }
 
 fn parse_uuid(value: String) -> sqlx::Result<Uuid> {
@@ -81,41 +82,13 @@ fn map_cache_entry(row: sqlx::any::AnyRow) -> Result<CacheEntry, sqlx::Error> {
 fn map_upload_row(row: sqlx::any::AnyRow) -> Result<UploadRow, sqlx::Error> {
     let id = parse_uuid(row.try_get::<String, _>("id")?)?;
     let entry_id = parse_uuid_opt(row.try_get("entry_id")?)?;
-    let parts_raw: Option<String> = row.try_get("parts_json")?;
-    let parts_value = parts_raw.as_deref().unwrap_or("[]");
-    let parts_json =
-        serde_json::from_str(parts_value).unwrap_or_else(|_| serde_json::Value::Array(Vec::new()));
 
     Ok(UploadRow {
         id,
         entry_id,
         upload_id: row.try_get("upload_id")?,
-        parts_json,
         state: row.try_get("state")?,
     })
-}
-
-fn parse_parts(raw: &str) -> Result<Vec<UploadPart>, sqlx::Error> {
-    serde_json::from_str(raw).map_err(|err| sqlx::Error::Decode(Box::new(err)))
-}
-
-fn format_parts(parts: &[UploadPart]) -> Result<String, sqlx::Error> {
-    serde_json::to_string(parts).map_err(|err| sqlx::Error::Decode(Box::new(err)))
-}
-
-async fn fetch_parts(
-    pool: &AnyPool,
-    driver: DatabaseDriver,
-    upload_id: &str,
-) -> Result<Vec<UploadPart>, sqlx::Error> {
-    let query = rewrite_placeholders(
-        "SELECT parts_json FROM cache_uploads WHERE upload_id = ?",
-        driver,
-    );
-    let row = sqlx::query(&query).bind(upload_id).fetch_one(pool).await?;
-    let raw: Option<String> = row.try_get("parts_json")?;
-    let serialized = raw.unwrap_or_else(|| "[]".to_string());
-    parse_parts(&serialized)
 }
 
 async fn fetch_upload(
@@ -124,7 +97,7 @@ async fn fetch_upload(
     upload_id: &str,
 ) -> Result<UploadRow, sqlx::Error> {
     let query = rewrite_placeholders(
-        "SELECT id, entry_id, upload_id, parts_json, state FROM cache_uploads WHERE upload_id = ?",
+        "SELECT id, entry_id, upload_id, state FROM cache_uploads WHERE upload_id = ?",
         driver,
     );
     let row = sqlx::query(&query).bind(upload_id).fetch_one(pool).await?;
@@ -322,14 +295,13 @@ pub async fn upsert_upload(
     let entry = entry_id.to_string();
 
     let insert_query = rewrite_placeholders(
-        "INSERT INTO cache_uploads (id, entry_id, upload_id, parts_json, state) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO cache_uploads (id, entry_id, upload_id, state) VALUES (?, ?, ?, ?)",
         driver,
     );
     let insert = sqlx::query(&insert_query)
         .bind(id.to_string())
         .bind(entry.clone())
         .bind(upload_id)
-        .bind("[]")
         .bind(state)
         .execute(pool)
         .await;
@@ -360,42 +332,192 @@ pub async fn upsert_upload(
     fetch_upload(pool, driver, upload_id).await
 }
 
-pub async fn add_part(
+pub async fn reserve_part(
     pool: &AnyPool,
     driver: DatabaseDriver,
     upload_id: &str,
-    part_number: i32,
-    etag: &str,
+    part_index: i32,
+    offset: Option<i64>,
+    size: i64,
 ) -> Result<(), sqlx::Error> {
-    let mut parts = fetch_parts(pool, driver, upload_id).await?;
-    parts.push(UploadPart {
-        part_number,
-        etag: etag.to_string(),
-    });
-    let serialized = format_parts(&parts)?;
     let now = Utc::now().timestamp();
+    let mut tx = pool.begin().await?;
 
-    let query = rewrite_placeholders(
-        "UPDATE cache_uploads SET parts_json = ?, updated_at = ? WHERE upload_id = ?",
+    let insert_query = rewrite_placeholders(
+        "INSERT INTO cache_upload_parts (upload_id, part_index, part_number, offset, size, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         driver,
     );
-    sqlx::query(&query)
-        .bind(serialized)
-        .bind(now)
+    let part_number = i64::from(part_index) + 1;
+    let insert = sqlx::query(&insert_query)
         .bind(upload_id)
-        .execute(pool)
+        .bind(part_index)
+        .bind(part_number)
+        .bind(offset)
+        .bind(size)
+        .bind("pending")
+        .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
+        .await;
+
+    match insert {
+        Ok(_) => {
+            tx.commit().await?;
+            Ok(())
+        }
+        Err(err) => {
+            if let sqlx::Error::Database(db_err) = &err {
+                if db_err.is_unique_violation() {
+                    let update_query = rewrite_placeholders(
+                        "UPDATE cache_upload_parts SET offset = ?, size = ?, state = ?, etag = NULL, updated_at = ? WHERE upload_id = ? AND part_index = ?",
+                        driver,
+                    );
+                    sqlx::query(&update_query)
+                        .bind(offset)
+                        .bind(size)
+                        .bind("pending")
+                        .bind(now)
+                        .bind(upload_id)
+                        .bind(part_index)
+                        .execute(&mut *tx)
+                        .await?;
+                    tx.commit().await?;
+                    Ok(())
+                } else {
+                    tx.rollback().await.ok();
+                    Err(err)
+                }
+            } else {
+                tx.rollback().await.ok();
+                Err(err)
+            }
+        }
+    }
+}
+
+pub async fn complete_part(
+    pool: &AnyPool,
+    driver: DatabaseDriver,
+    upload_id: &str,
+    part_index: i32,
+    provided_offset: Option<i64>,
+    etag: &str,
+) -> Result<(), sqlx::Error> {
+    let mut tx: Transaction<'_, sqlx::Any> = pool.begin().await?;
+    let fetch_query = rewrite_placeholders(
+        "SELECT size, offset FROM cache_upload_parts WHERE upload_id = ? AND part_index = ?",
+        driver,
+    );
+    let maybe_row = sqlx::query(&fetch_query)
+        .bind(upload_id)
+        .bind(part_index)
+        .fetch_optional(&mut *tx)
         .await?;
+
+    let row = if let Some(row) = maybe_row {
+        row
+    } else {
+        tx.rollback().await.ok();
+        return Err(sqlx::Error::RowNotFound);
+    };
+
+    let size: i64 = row.try_get("size")?;
+    let existing_offset: Option<i64> = row.try_get("offset")?;
+
+    let mut expected_offset = provided_offset;
+    if expected_offset.is_none() {
+        let sum_query = rewrite_placeholders(
+            "SELECT COALESCE(SUM(size), 0) AS total FROM cache_upload_parts WHERE upload_id = ? AND part_index < ?",
+            driver,
+        );
+        let total: i64 = sqlx::query(&sum_query)
+            .bind(upload_id)
+            .bind(part_index)
+            .fetch_one(&mut *tx)
+            .await?
+            .try_get("total")?;
+        expected_offset = Some(total);
+    }
+
+    if let (Some(current), Some(existing)) = (expected_offset, existing_offset)
+        && existing != current
+    {
+        tx.rollback().await.ok();
+        return Err(sqlx::Error::Protocol("part offset mismatch".into()));
+    }
+
+    let offset_to_store = if let Some(offset) = expected_offset.or(existing_offset) {
+        offset
+    } else {
+        tx.rollback().await.ok();
+        return Err(sqlx::Error::Protocol(
+            "missing offset for upload part".into(),
+        ));
+    };
+
+    let now = Utc::now().timestamp();
+    let update_query = rewrite_placeholders(
+        "UPDATE cache_upload_parts SET offset = ?, etag = ?, state = ?, updated_at = ?, size = ? WHERE upload_id = ? AND part_index = ?",
+        driver,
+    );
+    sqlx::query(&update_query)
+        .bind(offset_to_store)
+        .bind(etag)
+        .bind("completed")
+        .bind(now)
+        .bind(size)
+        .bind(upload_id)
+        .bind(part_index)
+        .execute(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
     Ok(())
 }
 
-pub async fn get_parts(
+pub async fn get_completed_parts(
     pool: &AnyPool,
     driver: DatabaseDriver,
     upload_id: &str,
-) -> Result<Vec<(i32, String)>, sqlx::Error> {
-    let mut parts = fetch_parts(pool, driver, upload_id).await?;
-    parts.sort_by_key(|part| part.part_number);
-    Ok(parts.into_iter().map(|p| (p.part_number, p.etag)).collect())
+) -> Result<Vec<UploadPartRecord>, sqlx::Error> {
+    let query = rewrite_placeholders(
+        "SELECT part_index, part_number, offset, size, etag FROM cache_upload_parts WHERE upload_id = ? AND state = ? ORDER BY part_index ASC",
+        driver,
+    );
+    let rows = sqlx::query(&query)
+        .bind(upload_id)
+        .bind("completed")
+        .fetch_all(pool)
+        .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            let offset: Option<i64> = row.try_get("offset")?;
+            let etag: Option<String> = row.try_get("etag")?;
+            let part_index: i32 = row.try_get("part_index")?;
+            let part_number: i32 = row.try_get("part_number")?;
+            let size: i64 = row.try_get("size")?;
+            let offset = offset.ok_or_else(|| {
+                sqlx::Error::Decode(Box::new(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "upload part missing offset",
+                )))
+            })?;
+            let etag = etag.ok_or_else(|| {
+                sqlx::Error::Decode(Box::new(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "upload part missing etag",
+                )))
+            })?;
+            Ok(UploadPartRecord {
+                part_index,
+                part_number,
+                offset,
+                size,
+                etag,
+            })
+        })
+        .collect()
 }
 
 pub async fn transition_upload_state(

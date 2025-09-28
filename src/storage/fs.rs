@@ -257,12 +257,11 @@ impl BlobStore for FsStore {
         &self,
         key: &str,
         upload_id: &str,
-        mut parts: Vec<(i32, String)>,
+        parts: Vec<(i32, String)>,
     ) -> Result<()> {
         if parts.is_empty() {
             anyhow::bail!("multipart upload must include at least one part");
         }
-        parts.sort_by_key(|(n, _)| *n);
 
         let staging_path = self.staging_path(upload_id);
         if let Some(parent) = staging_path.parent() {
