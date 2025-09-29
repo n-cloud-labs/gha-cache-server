@@ -50,11 +50,11 @@ pub async fn put_upload(
         return Err(ApiError::BadRequest("upload is finalizing".into()));
     }
 
-    let block_id = query
+    let chunk_index = query
         .blockid
         .as_deref()
-        .ok_or_else(|| ApiError::BadRequest("missing blockId query parameter".into()))?;
-    let chunk_index = chunk_index_from_block_id(block_id)?;
+        .map(chunk_index_from_block_id)
+        .unwrap_or(Ok(0))?;
 
     let part_no = i32::try_from(chunk_index + 1)
         .map_err(|_| ApiError::BadRequest("invalid chunk index".into()))?;
