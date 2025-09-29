@@ -1,15 +1,18 @@
 use std::ffi::OsString;
 use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
+use std::task::{Context as TaskContext, Poll};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::StreamExt;
+use futures::{Stream, StreamExt};
 use sha2::{Digest, Sha256};
 use tokio::fs::{self, File, OpenOptions};
 use tokio::io::{self, AsyncWriteExt};
+use tokio::runtime::Handle;
+use tokio::task;
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
@@ -246,6 +249,7 @@ impl BlobStore for FsStore {
         file.flush().await?;
         drop(file);
 
+        drop_page_cache(&part_path).await?;
         self.ensure_file_mode(&part_path).await?;
 
         let digest = hasher.finalize();
@@ -294,6 +298,7 @@ impl BlobStore for FsStore {
         output.flush().await?;
         drop(output);
 
+        drop_page_cache(&staging_path).await?;
         let destination = self.destination_path(key)?;
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent).await.with_context(|| {
@@ -346,9 +351,11 @@ impl BlobStore for FsStore {
             }
         };
 
+        let path_for_stream = path.clone();
         let stream = ReaderStream::new(file).map(|chunk| chunk.map_err(anyhow::Error::from));
+        let stream = CacheDroppingStream::new(stream.boxed(), path_for_stream).boxed();
 
-        Ok(Some(Box::pin(stream)))
+        Ok(Some(stream))
     }
 
     async fn delete(&self, key: &str) -> Result<()> {
@@ -389,5 +396,81 @@ impl BlobStore for FsStore {
         }
 
         Ok(())
+    }
+}
+
+fn drop_page_cache_blocking(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::fs::File;
+        use std::os::unix::io::AsRawFd;
+
+        match File::open(path) {
+            Ok(file) => {
+                let fd = file.as_raw_fd();
+                let result = unsafe { libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_DONTNEED) };
+                if result != 0 {
+                    return Err(std::io::Error::from_raw_os_error(result));
+                }
+            }
+            Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(err) => return Err(err),
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+
+    Ok(())
+}
+
+async fn drop_page_cache(path: &Path) -> Result<()> {
+    let path = path.to_path_buf();
+    let result = task::spawn_blocking(move || drop_page_cache_blocking(path.as_path()))
+        .await
+        .context("failed to run drop_page_cache task")?;
+    result.map_err(anyhow::Error::from)
+}
+
+struct CacheDroppingStream {
+    inner: BlobDownloadStream,
+    path: Option<PathBuf>,
+}
+
+impl CacheDroppingStream {
+    fn new(stream: BlobDownloadStream, path: PathBuf) -> Self {
+        Self {
+            inner: stream,
+            path: Some(path),
+        }
+    }
+}
+
+impl Stream for CacheDroppingStream {
+    type Item = anyhow::Result<Bytes>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        self.inner.as_mut().poll_next(cx)
+    }
+}
+
+impl Drop for CacheDroppingStream {
+    fn drop(&mut self) {
+        if let Some(path) = self.path.take() {
+            if let Ok(handle) = Handle::try_current() {
+                handle.spawn(async move {
+                    let _ = drop_page_cache(path.as_path()).await;
+                });
+            } else {
+                let _ = std::thread::spawn(move || {
+                    let _ = drop_page_cache_blocking(path.as_path());
+                });
+            }
+        }
     }
 }

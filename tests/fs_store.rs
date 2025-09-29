@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use bytes::Bytes;
 use futures::{StreamExt, stream};
 use gha_cache_server::storage::{BlobStore, BlobUploadPayload, fs::FsStore};
@@ -14,6 +14,25 @@ fn payload_from_bytes(chunks: Vec<&'static [u8]>) -> BlobUploadPayload {
             .map(|chunk| Ok(Bytes::from_static(chunk))),
     )
     .boxed()
+}
+
+#[cfg(target_os = "linux")]
+fn read_rss_kb() -> Result<usize> {
+    let contents = std::fs::read_to_string("/proc/self/smaps_rollup")
+        .context("failed to read smaps_rollup")?;
+    for line in contents.lines() {
+        if let Some(value) = line.strip_prefix("Rss:") {
+            let value = value.trim().trim_end_matches(" kB");
+            let rss: usize = value
+                .split_whitespace()
+                .next()
+                .context("unexpected Rss format")?
+                .parse()
+                .context("failed to parse Rss value")?;
+            return Ok(rss);
+        }
+    }
+    anyhow::bail!("Rss entry not found in smaps_rollup");
 }
 
 #[tokio::test]
@@ -57,6 +76,61 @@ async fn multipart_upload_writes_file() -> Result<()> {
     assert!(
         !uploads_dir.exists(),
         "temporary upload directory should be cleaned up"
+    );
+
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn dropping_download_stream_releases_page_cache() -> Result<()> {
+    use std::time::Duration;
+
+    use tokio::time::sleep;
+
+    let temp = TempDir::new()?;
+    let store = FsStore::new(PathBuf::from(temp.path()), None, None, None).await?;
+    let key = "large/artifact.bin";
+
+    let baseline_rss = read_rss_kb()?;
+
+    let chunk_size = 1024 * 1024;
+    let chunk_count = 32;
+    let total_size = chunk_size * chunk_count;
+    let payload = stream::iter((0..chunk_count).map(move |index| {
+        let byte = (index & 0xFF) as u8;
+        Ok::<Bytes, anyhow::Error>(Bytes::from(vec![byte; chunk_size]))
+    }))
+    .boxed();
+
+    let upload_id = store.create_multipart(key).await?;
+    let etag = store.upload_part(key, &upload_id, 1, payload).await?;
+    store
+        .complete_multipart(key, &upload_id, vec![(1, etag)])
+        .await?;
+
+    let mut stream = store.get(key).await?.context("expected download stream")?;
+
+    let mut downloaded = 0usize;
+    while let Some(chunk) = stream.next().await {
+        downloaded += chunk?.len();
+    }
+    assert_eq!(downloaded, total_size);
+
+    let rss_after_download = read_rss_kb()?;
+    assert!(
+        rss_after_download >= baseline_rss,
+        "rss should not decrease while stream is active"
+    );
+
+    drop(stream);
+
+    sleep(Duration::from_millis(250)).await;
+
+    let rss_after_drop = read_rss_kb()?;
+    assert!(
+        rss_after_drop <= baseline_rss + 2 * 1024,
+        "rss should return near baseline after dropping stream (baseline: {baseline_rss}, after drop: {rss_after_drop})"
     );
 
     Ok(())
