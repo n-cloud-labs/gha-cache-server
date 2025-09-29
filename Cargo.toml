@@ -33,6 +33,7 @@ http-body-util = { version = "0.1" }
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-rustls = { version = "0.27.7", default-features = false, features = ["aws-lc-rs", "http1", "native-tokio", "tls12"] }
 hyper-util = { version = "0.1.6", features = ["client", "client-legacy", "http1", "tokio"] }
+libc = { version = "0.2" }
 once_cell = { version = "1" }
 percent-encoding = { version = "2" }
 pin-project-lite = { version = "0.2" }
