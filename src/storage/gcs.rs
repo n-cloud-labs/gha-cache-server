@@ -23,6 +23,17 @@ use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use url::Url;
 
+#[cfg(test)]
+use once_cell::sync::Lazy;
+#[cfg(test)]
+use std::alloc::{GlobalAlloc, Layout, System};
+#[cfg(test)]
+use std::cell::Cell;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(test)]
+use std::sync::{Mutex as StdMutex, MutexGuard as StdMutexGuard};
+
 use crate::config::{GcsConfig, ServiceAccountKeyConfig};
 use crate::storage::{BlobDownloadStream, BlobStore, BlobUploadPayload, PresignedUrl};
 
@@ -229,6 +240,7 @@ impl BlobStore for GcsStore {
                 object_name,
                 payload,
             )
+            .with_resumable_upload_threshold(0usize)
             .send_buffered()
             .await?;
         if object.etag.is_empty() {
@@ -497,8 +509,160 @@ fn to_hex(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
+static HEAP_MEASUREMENT_LOCK: Lazy<StdMutex<()>> = Lazy::new(|| StdMutex::new(()));
+
+#[cfg(test)]
+std::thread_local! {
+    static THREAD_MEASURING: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(test)]
+struct CountingAllocator {
+    system: System,
+    current: AtomicUsize,
+    peak: AtomicUsize,
+}
+
+#[cfg(test)]
+impl CountingAllocator {
+    const fn new() -> Self {
+        Self {
+            system: System,
+            current: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
+        }
+    }
+
+    fn scoped(&'static self) -> MeasurementGuard {
+        let lock = HEAP_MEASUREMENT_LOCK
+            .lock()
+            .expect("measurement mutex poisoned");
+        self.current.store(0, Ordering::SeqCst);
+        self.peak.store(0, Ordering::SeqCst);
+        THREAD_MEASURING.with(|flag| flag.set(true));
+        MeasurementGuard {
+            allocator: self,
+            _lock: lock,
+        }
+    }
+
+    fn stop(&self) {
+        THREAD_MEASURING.with(|flag| flag.set(false));
+        self.current.store(0, Ordering::SeqCst);
+    }
+
+    fn peak_usage(&self) -> usize {
+        self.peak.load(Ordering::SeqCst)
+    }
+
+    fn should_track(&self) -> bool {
+        THREAD_MEASURING.with(|flag| flag.get())
+    }
+
+    fn add_allocation(&self, size: usize) {
+        if size == 0 {
+            return;
+        }
+        let new = self.current.fetch_add(size, Ordering::SeqCst) + size;
+        let mut observed = self.peak.load(Ordering::SeqCst);
+        while new > observed {
+            match self
+                .peak
+                .compare_exchange(observed, new, Ordering::SeqCst, Ordering::SeqCst)
+            {
+                Ok(_) => break,
+                Err(previous) => observed = previous,
+            }
+        }
+    }
+
+    fn remove_allocation(&self, size: usize) {
+        if size == 0 {
+            return;
+        }
+        self.current.fetch_sub(size, Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+impl Default for CountingAllocator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+unsafe impl GlobalAlloc for CountingAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let ptr = unsafe { self.system.alloc(layout) };
+        if !ptr.is_null() && self.should_track() {
+            self.add_allocation(layout.size());
+        }
+        ptr
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        let ptr = unsafe { self.system.alloc_zeroed(layout) };
+        if !ptr.is_null() && self.should_track() {
+            self.add_allocation(layout.size());
+        }
+        ptr
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        if self.should_track() {
+            self.remove_allocation(layout.size());
+        }
+        unsafe { self.system.dealloc(ptr, layout) };
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let new_ptr = unsafe { self.system.realloc(ptr, layout, new_size) };
+        if !new_ptr.is_null() && self.should_track() {
+            let old_size = layout.size();
+            if new_size >= old_size {
+                self.add_allocation(new_size - old_size);
+            } else {
+                self.remove_allocation(old_size - new_size);
+            }
+        }
+        new_ptr
+    }
+}
+
+#[cfg(test)]
+#[global_allocator]
+static GLOBAL_ALLOCATOR: CountingAllocator = CountingAllocator::new();
+
+#[cfg(test)]
+pub(super) struct MeasurementGuard {
+    allocator: &'static CountingAllocator,
+    _lock: StdMutexGuard<'static, ()>,
+}
+
+#[cfg(test)]
+impl MeasurementGuard {
+    pub(super) fn peak(&self) -> usize {
+        self.allocator.peak_usage()
+    }
+}
+
+#[cfg(test)]
+impl Drop for MeasurementGuard {
+    fn drop(&mut self) {
+        self.allocator.stop();
+    }
+}
+
+#[cfg(test)]
+pub(super) fn start_heap_measurement() -> MeasurementGuard {
+    GLOBAL_ALLOCATOR.scoped()
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use futures::{StreamExt, stream};
     use std::collections::HashSet;
 
     const TEST_PRIVATE_KEY: &str = "-----BEGIN PRIVATE KEY-----\nMIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQC8TUWONZPa4/cv\nNtKsIYPzx4MD/xkOZZPjtZuIK9P2zoI77aAeD8df8Jx0kFkYQpgZDq+7S37FaNm9\n/sATTYrHs7j1kVwjajy7x+ulAhy0Wyu3g7zoOMtLvzEoAqUmYgUNLxAH+C+ArlX2\nWwviT0CMqcOHwHv6oANzdImWensJcSoxeE+EKKLhfoPdRRllLjvN7Q1c8Pd3ixgn\nm0ZhRGErhphGbwV5OgGjFUShfmIC9cubKTpqrxzVR+UQtqZ/hcOjxS8gzQpe+DNV\nM/7nD1DME0Des0DLOwDb4+4BzetHFhSIe7QB/Wnh1Wp1eYuyvLUz057HDAfwjI2h\nxrDe/HtfAgMBAAECggEADSv5Pe22Llfx9jCHOMPjag2+YWzaa4JkKkfi3aSgiswp\nRK3mRxQNe0LmftTgwUIEnQQaUNICx9ECIjiMEQ2Z3pxOHNy9LZEEjJIl2VYLfKY/\n/vH30zqzJdT1naSJuY9JESywmg4crItat1qTuzyV+auft4LvE+SrjnZMGuWYblwy\n+3iKgACsnfU9OcrnfXe6I66sVUeeqAjDsqW/vnN5Hdpo057yQlygRs6rIgCS5H68\nXaO+YsLQeaxY5/gJ4n3itGOCwV5sZZ+HLiVIx6cAg0S6rLMFQek0B23Jon+/mKsX\nB4HQgElQe3R2h3vwLvKjQ6dh+NQxhG6wShhMkSsxSQKBgQDvKfYLS4p1Pv/VxNVI\nSOCoy0MVi+7SBXsxXHNTvMig2GcA2QHSk2TXS6HI4TPJUFFOSlr1GTMhLgwZYDvP\nvkdINejOYxEA/ZCt98minaPnmwzNgc9nelmtarUo2fOQ/76+qLe8Z4eqYJCk5kLm\nHwiu2aLUcH6kxbaAR5tw/52SHQKBgQDJjrYSOwJmOT1yJ/2tiWzse/bJoy7cZ4pN\n6VK9CpHaDMBS3rTG3OK8llBmLVlrUBB1jRwAfgkL1sPs9CnzOTTPeaZx2rAnwZGx\nYwxYQEYLC3eNnz9uyojzD2TzyWIssCM21GHjkaWsecBoV8XrbGs2kLGe+VeXgzRZ\nJHP03mXKqwKBgCvH1aeZq33tC245ewWheabMlroyBITjxfpyPxZcH6n6E1j/YKsI\nmlQjHzmjqBQ5JLkdOWtWsppnUIWwrSJJZckdPUHStsEkqcB+9KVVEDUMmBpiofIC\nXro1J3aT91daybMjNYdCuH4C8VeOYz62/aLsajdTZIuLOe5frV/RGyotAoGAEUf2\nHlwG2aLgvM/m9SEKQMBkKWefVfBesE1n9aNZW/up5bEIiOBZZFfy7r/GoefMcXe2\nxegIeIZiaAeLLTpjZ8KDXdGlNtNm3XGjllF0b+/8wRy9QI+G7GgOfMRwcWpsqn/N\nIMjVDpOlxox4ALZb/uKrB/lS5D+wllAEzSLgUV8CgYBHjsa2qZUi8zkkSgbA2ueU\n0ClzugJc/sLJ7ePwNEATfIvGOq7ZGYmx/wd0ghy/FwUcA0sK2Tj5O/KvT6iX9m5s\n3o12N+x90tMTyXBJd5M6wDTZlOpiFcqovOOi2kVe4kb13IHgMFOfmN5wvCcL1qhd\nL9k+Zdlx7/HuONEsjRUn+w==\n-----END PRIVATE KEY-----\n";
@@ -602,5 +766,45 @@ mod tests {
             "https://storage.googleapis.com/example-bucket/path/to/object.tar?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Credential=test-sa%40example.iam.gserviceaccount.com%2F20240102%2Fauto%2Fstorage%2Fgoog4_request&X-Goog-Date=20240102T030405Z&X-Goog-Expires=600&X-Goog-Signature=2429d09964a6ffcaa1d1a615c516ed63ba360159f3eed90370e2d7ac76352b985c0a6594beab49ff9b027354414fa4e642c8c420135b60a5496e437be98e60e617528117145e2ab5da875e4c40f8042d0de409ca6241103374711ecf8185027554bdf077d657774f979b1fe4a4f91ec62d2a3486f76914912eecf3228663a0d76b33fb94e2b2678bc889bff1746c33acc73d5180dc51961bf43a4c1c82c2c2860a2a026c0dc723ca21ef63360d19e196bc25e67d93a257ea96ab7142e880f2a2dd2ced99d67d8d7b2c2e581569e216a4c0ff3665ae7553379b8ec3384b793f9b604ac54e07e3b1d7152704c73392648cb1f8c8f9a3111748882548ab9effabda&X-Goog-SignedHeaders=host"
         );
         Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn gcs_stream_source_streams_without_buffering_entire_payload() {
+        let measurement = super::start_heap_measurement();
+        let chunk_size = 1usize << 20;
+        let chunk_count = 16usize;
+        let payload: BlobUploadPayload = stream::unfold(0usize, move |index| {
+            let chunk_size = chunk_size;
+            let chunk_count = chunk_count;
+            async move {
+                if index >= chunk_count {
+                    None
+                } else {
+                    let data = vec![0u8; chunk_size];
+                    let bytes = bytes::Bytes::from(data);
+                    Some((Ok(bytes), index + 1))
+                }
+            }
+        })
+        .boxed();
+
+        let mut source = GcsStreamSource::new(payload);
+        let mut total = 0usize;
+        while let Some(chunk) = source.next().await {
+            let bytes = chunk.expect("stream chunk should succeed");
+            assert_eq!(bytes.len(), chunk_size);
+            total += bytes.len();
+        }
+
+        assert_eq!(total, chunk_size * chunk_count);
+
+        let peak = measurement.peak();
+        drop(measurement);
+
+        let allowed_peak = chunk_size * 2;
+        assert!(
+            peak <= allowed_peak,
+            "expected peak heap usage to stay below {allowed_peak} bytes, observed {peak}",
+        );
     }
 }
