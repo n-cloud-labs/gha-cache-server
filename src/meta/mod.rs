@@ -581,10 +581,12 @@ pub async fn complete_part(
 
     let mut expected_offset = provided_offset;
     if expected_offset.is_none() {
-        let sum_query = rewrite_placeholders(
-            "SELECT COALESCE(SUM(size), 0) AS total FROM cache_upload_parts WHERE upload_id = ? AND part_index < ?",
-            driver,
-        );
+        let sum_sql = if driver == DatabaseDriver::Postgres {
+            "SELECT COALESCE(SUM(size), 0)::bigint AS total FROM cache_upload_parts WHERE upload_id = ? AND part_index < ?"
+        } else {
+            "SELECT COALESCE(SUM(size), 0) AS total FROM cache_upload_parts WHERE upload_id = ? AND part_index < ?"
+        };
+        let sum_query = rewrite_placeholders(sum_sql, driver);
         let total: i64 = sqlx::query(&sum_query)
             .bind(upload_id)
             .bind(part_index)
