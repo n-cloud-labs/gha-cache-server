@@ -1,3 +1,4 @@
+use std::ffi::{OsStr, OsString};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,18 +20,49 @@ use gha_cache_server::config::{
 use gha_cache_server::http;
 use gha_cache_server::storage::{BlobStore, fs::FsStore};
 
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<OsString>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+        let previous = std::env::var_os(key);
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        Self { key, previous }
+    }
+
+    fn remove(key: &'static str) -> Self {
+        let previous = std::env::var_os(key);
+        unsafe {
+            std::env::remove_var(key);
+        }
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        if let Some(previous) = &self.previous {
+            unsafe {
+                std::env::set_var(self.key, previous);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+}
+
 static ENV_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 static RUSTLS_PROVIDER: Lazy<()> = Lazy::new(|| {
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
         .expect("install rustls provider");
 });
-
-fn remove_env_var(key: &str) {
-    unsafe {
-        std::env::remove_var(key);
-    }
-}
 
 struct TestServer {
     base_url: String,
@@ -125,10 +157,8 @@ impl TestServer {
 async fn opendal_read_on_empty_cache_returns_not_found() -> Result<()> {
     let _guard = ENV_MUTEX.lock().await;
 
-    unsafe {
-        std::env::set_var("ACTIONS_CACHE_SERVICE_V2", "enabled");
-    }
-    remove_env_var("GITHUB_SERVER_URL");
+    let _v2 = EnvVarGuard::set("ACTIONS_CACHE_SERVICE_V2", "enabled");
+    let _github_url = EnvVarGuard::remove("GITHUB_SERVER_URL");
 
     let server = TestServer::start().await?;
     let operator = server.operator()?;
@@ -141,7 +171,6 @@ async fn opendal_read_on_empty_cache_returns_not_found() -> Result<()> {
 
     server.stop().await?;
 
-    remove_env_var("ACTIONS_CACHE_SERVICE_V2");
     Ok(())
 }
 
@@ -149,7 +178,8 @@ async fn opendal_read_on_empty_cache_returns_not_found() -> Result<()> {
 async fn opendal_write_and_read_roundtrip() -> Result<()> {
     let _guard = ENV_MUTEX.lock().await;
 
-    remove_env_var("GITHUB_SERVER_URL");
+    let _v2 = EnvVarGuard::remove("ACTIONS_CACHE_SERVICE_V2");
+    let _github_url = EnvVarGuard::remove("GITHUB_SERVER_URL");
 
     let server = TestServer::start().await?;
     let operator = server.operator()?;
@@ -170,8 +200,8 @@ async fn opendal_write_and_read_roundtrip() -> Result<()> {
 async fn rest_reserve_cache_returns_safe_numeric_identifier() -> Result<()> {
     let _guard = ENV_MUTEX.lock().await;
 
-    remove_env_var("ACTIONS_CACHE_SERVICE_V2");
-    remove_env_var("GITHUB_SERVER_URL");
+    let _v2 = EnvVarGuard::remove("ACTIONS_CACHE_SERVICE_V2");
+    let _github_url = EnvVarGuard::remove("GITHUB_SERVER_URL");
 
     let server = TestServer::start().await?;
 
