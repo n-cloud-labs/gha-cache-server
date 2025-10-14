@@ -74,7 +74,7 @@ impl Default for RequestOrigin {
 }
 
 fn build_upload_url(origin: &RequestOrigin, id: Uuid) -> String {
-    origin.absolute(&format!("/upload/{id}"))
+    origin.absolute(&format!("/upload/{id}?_=1"))
 }
 
 fn build_download_url(origin: &RequestOrigin, cache_key: &str, id: Uuid) -> String {
