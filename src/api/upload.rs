@@ -12,7 +12,6 @@ use std::{io, time::Duration};
 use uuid::Uuid;
 
 use crate::api::path::encode_path_segment;
-use crate::api::types::uuid_to_i64;
 use crate::db::rewrite_placeholders;
 use crate::http::AppState;
 use crate::meta;
@@ -40,6 +39,11 @@ async fn resolve_cache_id(st: &AppState, raw: &str) -> Result<Uuid> {
     let numeric: i64 = raw
         .parse()
         .map_err(|_| ApiError::BadRequest("invalid cacheId".into()))?;
+    if let Some(entry_id) =
+        meta::find_entry_id_by_numeric(&st.pool, st.database_driver, numeric).await?
+    {
+        return Ok(entry_id);
+    }
     let prefix = format!("{}%", uuid_prefix_from_numeric(numeric));
     let sql = rewrite_placeholders(
         "SELECT id FROM cache_entries WHERE id LIKE ? LIMIT 1",
@@ -371,9 +375,14 @@ pub async fn reserve_cache(
     )
     .await?;
 
-    Ok(Json(
-        serde_json::json!({ "cacheId": uuid_to_i64(entry.id) }),
-    ))
+    let Some(cache_id) = meta::get_cache_numeric_id(&st.pool, st.database_driver, entry.id).await?
+    else {
+        return Err(ApiError::Internal(
+            "failed to allocate cache identifier".into(),
+        ));
+    };
+
+    Ok(Json(serde_json::json!({ "cacheId": cache_id })))
 }
 
 // ====== actions/cache: PATCH /_apis/artifactcache/caches/:id with Content-Range ======
