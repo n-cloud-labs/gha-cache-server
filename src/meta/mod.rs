@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sqlx::{AnyPool, Error, Row, Transaction};
 use std::convert::TryFrom;
@@ -13,6 +14,7 @@ use crate::error::ApiError;
 use crate::meta;
 
 const FINALIZE_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const MAX_SAFE_CACHE_NUMERIC_ID: i64 = 9_007_199_254_740_991;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CacheEntry {
@@ -71,6 +73,51 @@ fn timestamp_to_datetime(ts: i64) -> sqlx::Result<DateTime<Utc>> {
             format!("invalid timestamp: {ts}"),
         )))
     })
+}
+
+fn generate_cache_numeric_id() -> i64 {
+    let mut rng = rand::thread_rng();
+    rng.gen_range(1..=MAX_SAFE_CACHE_NUMERIC_ID)
+}
+
+async fn insert_cache_numeric_id(
+    tx: &mut Transaction<'_, sqlx::Any>,
+    driver: DatabaseDriver,
+    entry_id: Uuid,
+) -> Result<i64, sqlx::Error> {
+    let entry_str = entry_id.to_string();
+    let insert_sql = rewrite_placeholders(
+        "INSERT INTO cache_entry_ids (entry_id, numeric_id) VALUES (?, ?)",
+        driver,
+    );
+    let fetch_sql = rewrite_placeholders(
+        "SELECT numeric_id FROM cache_entry_ids WHERE entry_id = ? LIMIT 1",
+        driver,
+    );
+
+    loop {
+        let candidate = generate_cache_numeric_id();
+        let result = sqlx::query(&insert_sql)
+            .bind(&entry_str)
+            .bind(candidate)
+            .execute(tx.as_mut())
+            .await;
+
+        match result {
+            Ok(_) => return Ok(candidate),
+            Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
+                if let Some(existing) = sqlx::query_scalar::<_, i64>(&fetch_sql)
+                    .bind(&entry_str)
+                    .fetch_optional(tx.as_mut())
+                    .await?
+                {
+                    return Ok(existing);
+                }
+                continue;
+            }
+            Err(err) => return Err(err),
+        }
+    }
 }
 
 fn map_cache_entry(row: sqlx::any::AnyRow) -> Result<CacheEntry, sqlx::Error> {
@@ -397,6 +444,7 @@ pub async fn create_entry(
     scope: &str,
     storage_key: &str,
 ) -> Result<CacheEntry, sqlx::Error> {
+    let mut tx = pool.begin().await?;
     let id = Uuid::new_v4();
     let query = rewrite_placeholders(
         "INSERT INTO cache_entries (id, org, repo, cache_key, cache_version, scope, storage_key) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -410,10 +458,51 @@ pub async fn create_entry(
         .bind(version)
         .bind(scope)
         .bind(storage_key)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
 
+    insert_cache_numeric_id(&mut tx, driver, id).await?;
+
+    tx.commit().await?;
+
     fetch_entry(pool, driver, id).await
+}
+
+pub async fn get_cache_numeric_id(
+    pool: &AnyPool,
+    driver: DatabaseDriver,
+    entry_id: Uuid,
+) -> Result<Option<i64>, sqlx::Error> {
+    let query = rewrite_placeholders(
+        "SELECT numeric_id FROM cache_entry_ids WHERE entry_id = ? LIMIT 1",
+        driver,
+    );
+    sqlx::query_scalar::<_, i64>(&query)
+        .bind(entry_id.to_string())
+        .fetch_optional(pool)
+        .await
+}
+
+pub async fn find_entry_id_by_numeric(
+    pool: &AnyPool,
+    driver: DatabaseDriver,
+    numeric_id: i64,
+) -> Result<Option<Uuid>, sqlx::Error> {
+    let query = rewrite_placeholders(
+        "SELECT entry_id FROM cache_entry_ids WHERE numeric_id = ? LIMIT 1",
+        driver,
+    );
+    let maybe = sqlx::query(&query)
+        .bind(numeric_id)
+        .fetch_optional(pool)
+        .await?;
+
+    if let Some(row) = maybe {
+        let entry_id: String = row.try_get("entry_id")?;
+        Ok(Some(parse_uuid(entry_id)?))
+    } else {
+        Ok(None)
+    }
 }
 
 pub async fn find_entry_by_key_version(

@@ -6,6 +6,8 @@ use axum::Router;
 use once_cell::sync::Lazy;
 use opendal::services::Ghac;
 use opendal::{ErrorKind, Operator};
+use reqwest::Client;
+use serde_json::json;
 use sqlx::AnyPool;
 use sqlx::any::AnyPoolOptions;
 use tempfile::TempDir;
@@ -23,13 +25,6 @@ static RUSTLS_PROVIDER: Lazy<()> = Lazy::new(|| {
         .install_default()
         .expect("install rustls provider");
 });
-
-fn set_env_var(key: &str, value: &str) {
-    // Environment mutations are treated as unsafe on Rust 2024; the mutex ensures exclusive access.
-    unsafe {
-        std::env::set_var(key, value);
-    }
-}
 
 fn remove_env_var(key: &str) {
     unsafe {
@@ -130,7 +125,9 @@ impl TestServer {
 async fn opendal_read_on_empty_cache_returns_not_found() -> Result<()> {
     let _guard = ENV_MUTEX.lock().await;
 
-    set_env_var("ACTIONS_CACHE_SERVICE_V2", "enabled");
+    unsafe {
+        std::env::set_var("ACTIONS_CACHE_SERVICE_V2", "enabled");
+    }
     remove_env_var("GITHUB_SERVER_URL");
 
     let server = TestServer::start().await?;
@@ -145,7 +142,6 @@ async fn opendal_read_on_empty_cache_returns_not_found() -> Result<()> {
     server.stop().await?;
 
     remove_env_var("ACTIONS_CACHE_SERVICE_V2");
-
     Ok(())
 }
 
@@ -153,7 +149,6 @@ async fn opendal_read_on_empty_cache_returns_not_found() -> Result<()> {
 async fn opendal_write_and_read_roundtrip() -> Result<()> {
     let _guard = ENV_MUTEX.lock().await;
 
-    remove_env_var("ACTIONS_CACHE_SERVICE_V2");
     remove_env_var("GITHUB_SERVER_URL");
 
     let server = TestServer::start().await?;
@@ -165,6 +160,38 @@ async fn opendal_write_and_read_roundtrip() -> Result<()> {
     operator.write(key, payload.as_ref()).await?;
     let read_back = operator.read(key).await?;
     assert_eq!(read_back.to_vec(), payload);
+
+    server.stop().await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn rest_reserve_cache_returns_safe_numeric_identifier() -> Result<()> {
+    let _guard = ENV_MUTEX.lock().await;
+
+    remove_env_var("ACTIONS_CACHE_SERVICE_V2");
+    remove_env_var("GITHUB_SERVER_URL");
+
+    let server = TestServer::start().await?;
+
+    let client = Client::new();
+    let url = format!("{}{}_apis/artifactcache/caches", server.base_url, "");
+    let response = client
+        .post(url)
+        .header("accept", "application/json;api-version=6.0-preview.1")
+        .json(&json!({ "key": "rest/string-id", "version": "v1" }))
+        .send()
+        .await?;
+    assert!(response.status().is_success());
+
+    let body: serde_json::Value = response.json().await?;
+    let cache_id = body
+        .get("cacheId")
+        .and_then(|value| value.as_i64())
+        .ok_or_else(|| anyhow::anyhow!("cacheId is missing"))?;
+    const MAX_SAFE: i64 = 9_007_199_254_740_991;
+    assert!((1..=MAX_SAFE).contains(&cache_id));
 
     server.stop().await?;
 
