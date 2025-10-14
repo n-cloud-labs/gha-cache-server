@@ -15,6 +15,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use sqlx::Row;
 use uuid::Uuid;
 
+use crate::api::path::encode_path_segment;
 use crate::api::proto::cache;
 use crate::api::types::*;
 use crate::api::upload::{ensure_all_parts_uploaded, normalize_key, normalize_version};
@@ -77,7 +78,9 @@ fn build_upload_url(origin: &RequestOrigin, id: Uuid) -> String {
 }
 
 fn build_download_url(origin: &RequestOrigin, cache_key: &str, id: Uuid) -> String {
-    origin.absolute(&format!("/download/{cache_key}/{id}.tgz"))
+    let encoded_key = encode_path_segment(cache_key);
+    let encoded_filename = encode_path_segment(&format!("{id}.tgz"));
+    origin.absolute(&format!("/download/{encoded_key}/{encoded_filename}"))
 }
 
 fn unique_keys(primary: String, restores: &[String]) -> Vec<String> {

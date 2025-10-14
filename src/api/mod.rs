@@ -1,4 +1,5 @@
 pub mod download;
+pub mod path;
 pub mod proto;
 pub mod proxy;
 pub mod twirp;

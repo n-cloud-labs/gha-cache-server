@@ -61,6 +61,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 prost-build = { version = "0.13" }
 
 [dev-dependencies]
+opendal = { version = "0.54.1", features = ["services-ghac"] }
 tempfile = { version = "3" }
 
 [profile.release]
