@@ -1,4 +1,4 @@
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -11,6 +11,8 @@ use sqlx::Row;
 use std::{io, time::Duration};
 use uuid::Uuid;
 
+use crate::api::path::encode_path_segment;
+use crate::api::types::uuid_to_i64;
 use crate::db::rewrite_placeholders;
 use crate::http::AppState;
 use crate::meta;
@@ -21,6 +23,55 @@ use crate::{
 
 const MAX_CACHE_KEY_LENGTH: usize = 512;
 const MAX_CACHE_VERSION_LENGTH: usize = 512;
+
+fn uuid_prefix_from_numeric(value: i64) -> String {
+    let bytes = value.to_be_bytes();
+    let time_low = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    let time_mid = u16::from_be_bytes([bytes[4], bytes[5]]);
+    let time_high = u16::from_be_bytes([bytes[6], bytes[7]]);
+    format!("{time_low:08x}-{time_mid:04x}-{time_high:04x}")
+}
+
+async fn resolve_cache_id(st: &AppState, raw: &str) -> Result<Uuid> {
+    if let Ok(uuid) = Uuid::parse_str(raw) {
+        return Ok(uuid);
+    }
+
+    let numeric: i64 = raw
+        .parse()
+        .map_err(|_| ApiError::BadRequest("invalid cacheId".into()))?;
+    let prefix = format!("{}%", uuid_prefix_from_numeric(numeric));
+    let sql = rewrite_placeholders(
+        "SELECT id FROM cache_entries WHERE id LIKE ? LIMIT 1",
+        st.database_driver,
+    );
+    let row = sqlx::query(&sql)
+        .bind(&prefix)
+        .fetch_optional(&st.pool)
+        .await?;
+
+    let Some(row) = row else {
+        return Err(ApiError::BadRequest("invalid cacheId".into()));
+    };
+
+    let id: String = row.try_get("id")?;
+    Uuid::parse_str(&id).map_err(|_| ApiError::Internal("stored cache id is invalid".into()))
+}
+
+fn build_download_url_from_headers(headers: &HeaderMap, cache_key: &str, id: Uuid) -> String {
+    let scheme = headers
+        .get("x-forwarded-proto")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|raw| raw.split(',').next().map(|item| item.trim().to_owned()))
+        .unwrap_or_else(|| "http".to_string());
+    let authority = headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("localhost");
+    let encoded_key = encode_path_segment(cache_key);
+    let encoded_filename = encode_path_segment(&format!("{id}.tgz"));
+    format!("{scheme}://{authority}/download/{encoded_key}/{encoded_filename}")
+}
 
 #[derive(Debug, Deserialize)]
 pub struct ListCachesQuery {
@@ -230,6 +281,7 @@ pub async fn list_caches(
 // ====== actions/cache: GET /_apis/artifactcache/cache?keys=k1,k2&version=sha ======
 pub async fn get_cache_entry(
     State(st): State<AppState>,
+    headers: HeaderMap,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Result<(StatusCode, Json<serde_json::Value>)> {
     let keys = parse_keys_parameter(q.get("keys")).map_err(|err| match &err {
@@ -258,13 +310,16 @@ pub async fn get_cache_entry(
             let storage_key: String = row.try_get("storage_key")?;
             let scope: String = row.try_get("scope")?;
             meta::touch_entry(&st.pool, st.database_driver, id).await?;
-            let url = st
-                .store
-                .presign_get(&storage_key, std::time::Duration::from_secs(3600))
-                .await
-                .map_err(|e| ApiError::S3(format!("{e}")))?
-                .map(|p| p.url.to_string())
-                .unwrap_or_default();
+            let direct = if st.enable_direct {
+                st.store
+                    .presign_get(&storage_key, std::time::Duration::from_secs(3600))
+                    .await
+                    .map_err(|e| ApiError::S3(format!("{e}")))?
+                    .map(|p| p.url.to_string())
+            } else {
+                None
+            };
+            let url = direct.unwrap_or_else(|| build_download_url_from_headers(&headers, &key, id));
             let body = serde_json::json!({
                 "cacheKey": key,
                 "scope": scope,
@@ -316,7 +371,9 @@ pub async fn reserve_cache(
     )
     .await?;
 
-    Ok(Json(serde_json::json!({ "cacheId": entry.id })))
+    Ok(Json(
+        serde_json::json!({ "cacheId": uuid_to_i64(entry.id) }),
+    ))
 }
 
 // ====== actions/cache: PATCH /_apis/artifactcache/caches/:id with Content-Range ======
@@ -327,7 +384,7 @@ pub async fn upload_chunk(
     headers: HeaderMap,
     body: axum::body::Body,
 ) -> Result<StatusCode> {
-    let uuid = Uuid::parse_str(&id).map_err(|_| ApiError::BadRequest("invalid cacheId".into()))?;
+    let uuid = resolve_cache_id(&st, &id).await?;
     let sql = rewrite_placeholders(
         "SELECT upload_id, storage_key FROM cache_uploads u JOIN cache_entries e ON e.id = u.entry_id WHERE e.id = ?",
         st.database_driver,
@@ -344,18 +401,42 @@ pub async fn upload_chunk(
         return Err(ApiError::BadRequest("upload is finalizing".into()));
     }
 
-    let block_id = query
-        .block_id
-        .as_deref()
-        .ok_or_else(|| ApiError::BadRequest("missing blockId query parameter".into()))?;
-    let chunk_index = chunk_index_from_block_id(block_id)?;
-    let part_index = i32::try_from(chunk_index)
-        .map_err(|_| ApiError::BadRequest("invalid chunk index".into()))?;
-    let part_number = part_index + 1;
     let (offset, size, _) = parse_content_range(&headers)?;
     if size <= 0 {
         return Err(ApiError::BadRequest("chunk size must be positive".into()));
     }
+
+    let chunk_index = if let Some(block_id) = query.block_id.as_deref() {
+        chunk_index_from_block_id(block_id)?
+    } else {
+        let lookup_sql = rewrite_placeholders(
+            "SELECT part_index FROM cache_upload_parts WHERE upload_id = ? AND part_offset = ? LIMIT 1",
+            st.database_driver,
+        );
+        if let Some(existing) = sqlx::query_scalar::<_, i32>(&lookup_sql)
+            .bind(&upload_id)
+            .bind(offset)
+            .fetch_optional(&st.pool)
+            .await?
+        {
+            u32::try_from(existing)
+                .map_err(|_| ApiError::Internal("invalid stored chunk index".into()))?
+        } else {
+            let next_sql = rewrite_placeholders(
+                "SELECT COALESCE(MAX(part_index) + 1, 0) FROM cache_upload_parts WHERE upload_id = ?",
+                st.database_driver,
+            );
+            let next: i64 = sqlx::query_scalar(&next_sql)
+                .bind(&upload_id)
+                .fetch_one(&st.pool)
+                .await?;
+            u32::try_from(next).map_err(|_| ApiError::Internal("too many upload chunks".into()))?
+        }
+    };
+
+    let part_index = i32::try_from(chunk_index)
+        .map_err(|_| ApiError::BadRequest("invalid chunk index".into()))?;
+    let part_number = part_index + 1;
 
     if status.state != "uploading" {
         meta::transition_to_uploading(&st.pool, st.database_driver, &upload_id, &mut status)
@@ -550,7 +631,7 @@ pub async fn commit_cache(
     Path(id): Path<String>,
     Json(req): Json<serde_json::Value>,
 ) -> Result<StatusCode> {
-    let uuid = Uuid::parse_str(&id).map_err(|_| ApiError::BadRequest("invalid cacheId".into()))?;
+    let uuid = resolve_cache_id(&st, &id).await?;
     let query = rewrite_placeholders(
         "SELECT upload_id, storage_key FROM cache_uploads u JOIN cache_entries e ON e.id = u.entry_id WHERE e.id = ?",
         st.database_driver,

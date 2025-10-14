@@ -9,6 +9,7 @@ use axum::{
 };
 use bytes::Bytes;
 use futures::stream;
+use gha_cache_server::api::path::encode_path_segment;
 use gha_cache_server::api::proto::cache;
 use gha_cache_server::api::proxy::ProxyHttpClient;
 use gha_cache_server::api::twirp::TwirpRequest;
@@ -18,7 +19,7 @@ use gha_cache_server::config::DatabaseDriver;
 use gha_cache_server::http::AppState;
 use gha_cache_server::meta::{self, CacheEntry};
 use gha_cache_server::storage::{BlobDownloadStream, BlobStore, PresignedUrl};
-use http::Request;
+use http::{HeaderMap, HeaderValue, Request, header};
 use http_body_util::BodyExt;
 use sqlx::AnyPool;
 use sqlx::any::AnyPoolOptions;
@@ -195,7 +196,10 @@ async fn get_cache_entry_updates_last_access() {
     query_params.insert("keys".to_string(), entry.key.clone());
     query_params.insert("version".to_string(), entry.version.clone());
 
-    let _ = upload::get_cache_entry(State(state), Query(query_params))
+    let mut headers = HeaderMap::new();
+    headers.insert(header::HOST, HeaderValue::from_static("example.com"));
+
+    let _ = upload::get_cache_entry(State(state), headers, Query(query_params))
         .await
         .expect("cache hit");
 
@@ -232,7 +236,11 @@ async fn twirp_download_url_updates_last_access() {
     let payload: serde_json::Value = serde_json::from_slice(&body).expect("parse twirp body");
     assert_eq!(payload["ok"].as_bool(), Some(true));
     assert_eq!(payload["matched_key"].as_str(), Some(entry.key.as_str()));
-    let expected_url = format!("http://localhost/download/{}/{}.tgz", entry.key, entry.id);
+    let expected_url = format!(
+        "http://localhost/download/{}/{}",
+        encode_path_segment(&entry.key),
+        encode_path_segment(&format!("{}.tgz", entry.id))
+    );
     assert_eq!(
         payload["signed_download_url"].as_str(),
         Some(expected_url.as_str())
