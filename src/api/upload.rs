@@ -452,7 +452,7 @@ pub async fn upload_chunk(
             .await?;
     }
 
-    if let Err(err) = meta::reserve_part(
+    let stored_offset = match meta::reserve_part(
         &st.pool,
         st.database_driver,
         &upload_id,
@@ -462,7 +462,12 @@ pub async fn upload_chunk(
     )
     .await
     {
-        return Err(err.into());
+        Ok(offset) => offset,
+        Err(err) => return Err(err.into()),
+    };
+
+    if stored_offset != offset {
+        return Err(ApiError::BadRequest("part offset mismatch".into()));
     }
 
     if let Err(err) = meta::begin_part_upload(&st.pool, st.database_driver, &upload_id).await {
