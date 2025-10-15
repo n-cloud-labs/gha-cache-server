@@ -18,7 +18,7 @@ use uuid::Uuid;
 use crate::api::path::encode_path_segment;
 use crate::api::proto::cache;
 use crate::api::types::*;
-use crate::api::upload::{ensure_all_parts_uploaded, normalize_key, normalize_version};
+use crate::api::upload::{normalize_key, normalize_version};
 use crate::db::rewrite_placeholders;
 use crate::error::{ApiError, Result};
 use crate::http::AppState;
@@ -318,92 +318,36 @@ pub async fn finalize_cache_entry_upload(
         .await?;
     let upload_id: String = rec.try_get("upload_id")?;
     let storage_key: String = rec.try_get("storage_key")?;
+
+    let status = meta::get_upload_status(&st.pool, st.database_driver, &upload_id).await?;
+    if status.pending_finalize {
+        return Ok(TwirpResponse::new(
+            TwirpFinalizeResp {
+                ok: true,
+                entry_id: uuid_to_i64(entry.id),
+            },
+            format,
+        ));
+    }
     if let Err(err) =
         meta::set_pending_finalize(&st.pool, st.database_driver, &upload_id, true).await
     {
         return Err(err.into());
     }
 
-    if let Err(err) = meta::wait_for_no_active_parts(&st.pool, st.database_driver, &upload_id).await
-    {
-        let _ = meta::set_pending_finalize(&st.pool, st.database_driver, &upload_id, false).await;
-        return Err(err.into());
-    }
-
-    let reserved = meta::transition_upload_state(
-        &st.pool,
-        st.database_driver,
-        &upload_id,
-        &["reserved", "ready", "uploading"],
-        "finalizing",
-    )
-    .await?;
-    if !reserved {
-        let _ = meta::set_pending_finalize(&st.pool, st.database_driver, &upload_id, false).await;
-        return Err(ApiError::BadRequest(
-            "upload is still receiving parts".into(),
-        ));
-    }
-
-    let parts = crate::meta::get_completed_parts(&st.pool, st.database_driver, &upload_id).await?;
-    if let Err(err) = ensure_all_parts_uploaded(&parts, None) {
-        let _ = meta::transition_upload_state(
-            &st.pool,
-            st.database_driver,
-            &upload_id,
-            &["finalizing"],
-            "uploading",
-        )
-        .await;
-        let _ = meta::set_pending_finalize(&st.pool, st.database_driver, &upload_id, false).await;
-        return Err(err);
-    }
-
-    let complete_result = st
-        .store
-        .complete_multipart(
-            &storage_key,
-            &upload_id,
-            parts
-                .iter()
-                .map(|part| (part.part_number, part.etag.clone()))
-                .collect(),
-        )
-        .await;
-    match complete_result {
-        Ok(()) => {
-            let finalized = meta::transition_upload_state(
-                &st.pool,
-                st.database_driver,
-                &upload_id,
-                &["finalizing"],
-                "completed",
-            )
-            .await?;
-            if !finalized {
-                let _ = meta::set_pending_finalize(&st.pool, st.database_driver, &upload_id, false)
-                    .await;
-                return Err(ApiError::Internal(
-                    "failed to record completed upload state".into(),
-                ));
-            }
+    let job_state = st.clone();
+    let job = crate::jobs::finalize::FinalizeUploadJob::new(
+        job_state,
+        entry.id,
+        upload_id.clone(),
+        storage_key.clone(),
+        None,
+    );
+    tokio::spawn(async move {
+        if let Err(err) = crate::jobs::finalize::run(job).await {
+            tracing::error!(?err, upload_id = %upload_id, "finalize upload job failed");
         }
-        Err(err) => {
-            let _ = meta::transition_upload_state(
-                &st.pool,
-                st.database_driver,
-                &upload_id,
-                &["finalizing"],
-                "uploading",
-            )
-            .await;
-            let _ =
-                meta::set_pending_finalize(&st.pool, st.database_driver, &upload_id, false).await;
-            return Err(ApiError::S3(format!("{err}")));
-        }
-    }
-
-    let _ = meta::set_pending_finalize(&st.pool, st.database_driver, &upload_id, false).await;
+    });
 
     Ok(TwirpResponse::new(
         TwirpFinalizeResp {

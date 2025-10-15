@@ -13,6 +13,7 @@ use sqlx::AnyPool;
 use sqlx::any::AnyPoolOptions;
 use tempfile::TempDir;
 use tokio::sync::{Mutex, oneshot};
+use tokio::time::sleep;
 
 use gha_cache_server::config::{
     BlobStoreSelector, CleanupSettings, Config, DatabaseDriver, FsConfig,
@@ -188,7 +189,18 @@ async fn opendal_write_and_read_roundtrip() -> Result<()> {
     let payload = b"hello from opendal";
 
     operator.write(key, payload.as_ref()).await?;
-    let read_back = operator.read(key).await?;
+    let mut attempts = 0;
+    let read_back = loop {
+        match operator.read(key).await {
+            Ok(bytes) => break bytes,
+            Err(err) if err.kind() == ErrorKind::NotFound && attempts < 50 => {
+                attempts += 1;
+                sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+            Err(err) => return Err(err.into()),
+        }
+    };
     assert_eq!(read_back.to_vec(), payload);
 
     server.stop().await?;
