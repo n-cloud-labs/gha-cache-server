@@ -51,8 +51,9 @@ env:
       value: eu-central-1
 ```
 
-Optional keys such as `AWS_ENDPOINT_URL` or `S3_FORCE_PATH_STYLE` can be added
-to `.env.config` or `.env.extra` as needed.
+Optional keys such as `AWS_ENDPOINT_URL`, `S3_FORCE_PATH_STYLE`,
+`AWS_TLS_CA_BUNDLE`, or `AWS_TLS_INSECURE` can be added to `.env.config` or
+`.env.extra` as needed.
 
 #### Google Cloud Storage
 

@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf, str::FromStr, time::Duration};
+use std::{env::VarError, fs, path::PathBuf, str::FromStr, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -30,6 +30,13 @@ pub struct S3Config {
     pub region: String,
     pub endpoint_url: Option<String>,
     pub force_path_style: bool,
+    pub tls: S3TlsConfig,
+}
+
+#[derive(Clone)]
+pub struct S3TlsConfig {
+    pub accept_invalid_certs: bool,
+    pub custom_ca_bundle: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -143,6 +150,10 @@ impl Config {
                 force_path_style: std::env::var("S3_FORCE_PATH_STYLE")
                     .map(|v| v == "true")
                     .unwrap_or(true),
+                tls: S3TlsConfig {
+                    accept_invalid_certs: parse_env_bool("AWS_TLS_INSECURE")?.unwrap_or(false),
+                    custom_ca_bundle: parse_optional_path("AWS_TLS_CA_BUNDLE")?,
+                },
             })
         } else {
             None
@@ -258,6 +269,53 @@ impl Config {
     }
 }
 
+fn parse_env_bool(name: &str) -> Result<Option<bool>> {
+    parse_env_bool_result(name, std::env::var(name))
+}
+
+fn parse_env_bool_result(name: &str, value: Result<String, VarError>) -> Result<Option<bool>> {
+    match value {
+        Ok(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                bail!("{name} may not be empty");
+            }
+            match trimmed.to_ascii_lowercase().as_str() {
+                "1" | "true" => Ok(Some(true)),
+                "0" | "false" => Ok(Some(false)),
+                other => bail!("invalid boolean value '{other}' for {name}"),
+            }
+        }
+        Err(VarError::NotPresent) => Ok(None),
+        Err(VarError::NotUnicode(_)) => {
+            bail!("{name} contains invalid unicode characters")
+        }
+    }
+}
+
+fn parse_optional_path(name: &str) -> Result<Option<PathBuf>> {
+    parse_optional_path_result(name, std::env::var(name))
+}
+
+fn parse_optional_path_result(
+    name: &str,
+    value: Result<String, VarError>,
+) -> Result<Option<PathBuf>> {
+    match value {
+        Ok(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                bail!("{name} may not be empty");
+            }
+            Ok(Some(PathBuf::from(trimmed)))
+        }
+        Err(VarError::NotPresent) => Ok(None),
+        Err(VarError::NotUnicode(_)) => {
+            bail!("{name} contains invalid unicode characters")
+        }
+    }
+}
+
 fn parse_mode(var: &str) -> Result<Option<u32>> {
     match std::env::var(var) {
         Ok(value) => {
@@ -328,6 +386,56 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("unsupported database driver in DATABASE_URL")
+        );
+    }
+
+    #[test]
+    fn parse_env_bool_supports_true_and_false() {
+        assert_eq!(
+            parse_env_bool_result("__TEST_BOOL_TRUE", Ok("true".to_string())).unwrap(),
+            Some(true)
+        );
+
+        assert_eq!(
+            parse_env_bool_result("__TEST_BOOL_FALSE", Ok("0".to_string())).unwrap(),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn parse_env_bool_rejects_invalid_values() {
+        let err =
+            parse_env_bool_result("__TEST_BOOL_INVALID", Ok("maybe".to_string())).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("invalid boolean value 'maybe' for __TEST_BOOL_INVALID")
+        );
+    }
+
+    #[test]
+    fn parse_env_bool_returns_none_when_missing() {
+        assert_eq!(
+            parse_env_bool_result("__TEST_BOOL_MISSING", Err(VarError::NotPresent)).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_optional_path_trims_and_accepts_values() {
+        assert_eq!(
+            parse_optional_path_result("__TEST_PATH_VALUE", Ok("  /tmp/example  ".to_string()))
+                .unwrap(),
+            Some(PathBuf::from("/tmp/example"))
+        );
+    }
+
+    #[test]
+    fn parse_optional_path_rejects_empty_values() {
+        let err =
+            parse_optional_path_result("__TEST_PATH_EMPTY", Ok("   ".to_string())).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("__TEST_PATH_EMPTY may not be empty")
         );
     }
 }

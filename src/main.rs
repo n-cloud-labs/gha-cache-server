@@ -86,6 +86,7 @@ async fn main() -> anyhow::Result<()> {
                     s3_cfg.region.clone(),
                     s3_cfg.endpoint_url.clone(),
                     s3_cfg.force_path_style,
+                    s3_cfg.tls.clone(),
                 )
                 .await?,
             )

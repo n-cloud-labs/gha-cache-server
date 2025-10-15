@@ -25,6 +25,8 @@ BLOB_STORE=fs
 #AWS_REGION=us-east-1
 #AWS_ENDPOINT_URL=https://s3.example.com
 #S3_FORCE_PATH_STYLE=true
+#AWS_TLS_CA_BUNDLE=/etc/ssl/certs/custom-root.pem
+#AWS_TLS_INSECURE=false
 
 # Filesystem backend configuration.
 #FS_ROOT=/var/lib/gha-cache-server/blobs
