@@ -229,6 +229,8 @@ impl BlobStore for GcsStore {
         _key: &str,
         upload_id: &str,
         part_number: i32,
+        _offset: i64,
+        _length: i64,
         body: BlobUploadPayload,
     ) -> Result<String> {
         let object_name = self.part_object_name(upload_id, part_number);

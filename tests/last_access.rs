@@ -63,6 +63,8 @@ impl BlobStore for TestStore {
         _key: &str,
         _upload_id: &str,
         _part_number: i32,
+        _offset: i64,
+        _length: i64,
         _body: gha_cache_server::storage::BlobUploadPayload,
     ) -> anyhow::Result<String> {
         unimplemented!("not used in tests");

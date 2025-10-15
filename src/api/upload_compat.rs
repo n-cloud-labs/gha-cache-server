@@ -6,6 +6,7 @@ use sqlx::Row;
 use uuid::Uuid;
 
 use crate::api::upload::{body_to_blob_payload, chunk_index_from_block_id};
+use crate::config::DatabaseDriver;
 use crate::db::rewrite_placeholders;
 use crate::error::{ApiError, Result};
 use crate::http::AppState;
@@ -64,12 +65,27 @@ pub async fn put_upload(
             .await?;
     }
 
+    let sum_sql = match st.database_driver {
+        DatabaseDriver::Postgres => {
+            "SELECT COALESCE(SUM(size), 0)::bigint FROM cache_upload_parts WHERE upload_id = ? AND part_index < ?"
+        }
+        _ => {
+            "SELECT COALESCE(SUM(size), 0) FROM cache_upload_parts WHERE upload_id = ? AND part_index < ?"
+        }
+    };
+    let sum_query = rewrite_placeholders(sum_sql, st.database_driver);
+    let offset: i64 = sqlx::query_scalar(&sum_query)
+        .bind(&upload_id)
+        .bind(part_no - 1)
+        .fetch_one(&st.pool)
+        .await?;
+
     if let Err(err) = meta::reserve_part(
         &st.pool,
         st.database_driver,
         &upload_id,
         part_no - 1,
-        None,
+        Some(offset),
         size,
     )
     .await
@@ -84,7 +100,7 @@ pub async fn put_upload(
     let bs = body_to_blob_payload(body);
     let etag = match st
         .store
-        .upload_part(&storage_key, &upload_id, part_no, bs)
+        .upload_part(&storage_key, &upload_id, part_no, offset, size, bs)
         .await
     {
         Ok(etag) => etag,
@@ -101,7 +117,7 @@ pub async fn put_upload(
         st.database_driver,
         &upload_id,
         part_no - 1,
-        None,
+        Some(offset),
         &etag,
     )
     .await
