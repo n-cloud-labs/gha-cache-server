@@ -199,9 +199,10 @@ async fn concurrent_part_updates_are_ordered() {
         let pool = &pool;
         let upload = upload_id.clone();
         async move {
-            meta::reserve_part(pool, DatabaseDriver::Sqlite, &upload, 0, Some(0), 10)
+            let offset = meta::reserve_part(pool, DatabaseDriver::Sqlite, &upload, 0, Some(0), 10)
                 .await
                 .expect("reserve part 0");
+            assert_eq!(offset, 0);
             meta::complete_part(pool, DatabaseDriver::Sqlite, &upload, 0, Some(0), "etag-0")
                 .await
                 .expect("complete part 0");
@@ -211,9 +212,10 @@ async fn concurrent_part_updates_are_ordered() {
         let pool = &pool;
         let upload = upload_id.clone();
         async move {
-            meta::reserve_part(pool, DatabaseDriver::Sqlite, &upload, 1, Some(10), 7)
+            let offset = meta::reserve_part(pool, DatabaseDriver::Sqlite, &upload, 1, Some(10), 7)
                 .await
                 .expect("reserve part 1");
+            assert_eq!(offset, 10);
             meta::complete_part(pool, DatabaseDriver::Sqlite, &upload, 1, Some(10), "etag-1")
                 .await
                 .expect("complete part 1");
@@ -222,9 +224,10 @@ async fn concurrent_part_updates_are_ordered() {
 
     tokio::join!(first, second);
 
-    meta::reserve_part(&pool, DatabaseDriver::Sqlite, &upload_id, 2, None, 3)
+    let offset = meta::reserve_part(&pool, DatabaseDriver::Sqlite, &upload_id, 2, None, 3)
         .await
         .expect("reserve compat part");
+    assert_eq!(offset, 17);
     meta::complete_part(&pool, DatabaseDriver::Sqlite, &upload_id, 2, None, "etag-2")
         .await
         .expect("complete compat part");
@@ -269,16 +272,18 @@ async fn overlapping_part_uploads_hold_state_until_last_part_finishes() {
     .expect("transition to uploading");
     assert!(moved);
 
-    meta::reserve_part(&pool, DatabaseDriver::Sqlite, &upload_id, 0, Some(0), 5)
+    let offset = meta::reserve_part(&pool, DatabaseDriver::Sqlite, &upload_id, 0, Some(0), 5)
         .await
         .expect("reserve part 0");
+    assert_eq!(offset, 0);
     meta::begin_part_upload(&pool, DatabaseDriver::Sqlite, &upload_id)
         .await
         .expect("begin part 0");
 
-    meta::reserve_part(&pool, DatabaseDriver::Sqlite, &upload_id, 1, Some(5), 7)
+    let offset = meta::reserve_part(&pool, DatabaseDriver::Sqlite, &upload_id, 1, Some(5), 7)
         .await
         .expect("reserve part 1");
+    assert_eq!(offset, 5);
     meta::begin_part_upload(&pool, DatabaseDriver::Sqlite, &upload_id)
         .await
         .expect("begin part 1");
