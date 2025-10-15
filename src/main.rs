@@ -4,6 +4,7 @@ mod config;
 mod db;
 mod error;
 mod http;
+mod jobs;
 mod meta;
 mod obs;
 mod storage;

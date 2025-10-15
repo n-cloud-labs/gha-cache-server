@@ -34,6 +34,10 @@ Maintainer: Alessandro Chitolina <alekitto@gmail.com>
 - Document new features as they are implemented; do not defer documentation updates to later changes.
 - Always ensure the appropriate documentation files accompany repository additions.
 
+## Protocol stability
+- Treat the public cache protocol as immutable. Do not modify `.proto` files or existing wire schemas.
+- HTTP status codes, headers, and response payload shapes for public cache endpoints are part of the protocol. Do not change them without an explicit maintainer request.
+
 ## Domain and payload structures
 - When an API request/response payload has the same shape as a domain model, keep a duplicated struct:
   - The payload type (with serialization, deserialization, and validation) lives in the API layer.
