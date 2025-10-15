@@ -32,6 +32,8 @@ pub trait BlobStore: Send + Sync + 'static {
         key: &str,
         upload_id: &str,
         part_number: i32,
+        offset: i64,
+        length: i64,
         body: BlobUploadPayload,
     ) -> anyhow::Result<String>; // returns etag
 

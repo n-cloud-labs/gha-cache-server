@@ -472,7 +472,7 @@ pub async fn upload_chunk(
     let bs = body_to_blob_payload(body);
     let etag = match st
         .store
-        .upload_part(&storage_key, &upload_id, part_number, bs)
+        .upload_part(&storage_key, &upload_id, part_number, offset, size, bs)
         .await
     {
         Ok(etag) => etag,
@@ -814,6 +814,8 @@ mod tests {
             _key: &str,
             _upload_id: &str,
             _part_number: i32,
+            _offset: i64,
+            _length: i64,
             _body: BlobUploadPayload,
         ) -> anyhow::Result<String> {
             unimplemented!("not required for tests")
@@ -870,6 +872,8 @@ mod tests {
             _key: &str,
             _upload_id: &str,
             _part_number: i32,
+            _offset: i64,
+            _length: i64,
             _body: BlobUploadPayload,
         ) -> anyhow::Result<String> {
             unimplemented!("not required for tests")
