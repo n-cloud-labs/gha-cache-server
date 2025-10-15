@@ -45,6 +45,8 @@ message FinalizeCacheEntryUploadResponse {
   bool ok = 1;
   // Cache entry database ID
   int64 entry_id = 2;
+  // True when the server accepted the finalize request and queued the background job
+  bool pending_finalize = 3;
 }
 
 message GetCacheEntryDownloadURLRequest {

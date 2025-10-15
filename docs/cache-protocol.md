@@ -110,12 +110,22 @@ upload by calling:
 Response:
 
 ```json
-{ "ok": true, "entry_id": 123456789 }
+{ "ok": true, "entry_id": 123456789, "pending_finalize": true }
 ```
 
 The lookup is performed against the key/version pair and succeeds when the cache
 entry exists and has an associated upload session. When the lookup fails the
-server returns `ok: false` with a zero identifier.
+server returns `ok: false` with a zero identifier. A successful response now
+indicates that the finalization job was enqueued by setting
+`pending_finalize = true`. Clients should poll until the flag clears by issuing
+additional finalize requests; the server keeps returning the `pending` status
+without re-queuing work while the background job runs.
+
+The REST `POST /_apis/artifactcache/caches/{id}` endpoint mirrors this
+behaviour. It immediately returns `202 Accepted` with
+`{"pendingFinalize": true}` in the response body once the finalize job is
+queued. Callers can retry the commit request to observe when the background job
+finishes without starting a duplicate run.
 
 ## Upload state machine
 
@@ -123,7 +133,9 @@ The cache metadata keeps track of the multipart upload lifecycle inside the
 `cache_uploads.state` column. API handlers use optimistic transitions to gate
 concurrent operations through `transition_upload_state`, and the active part
 counter plus the `pending_finalize` flag complement the state machine when the
-commit endpoint waits for in-flight parts to finish.【F:src/meta/mod.rs†L136-L200】【F:src/api/upload.rs†L333-L470】【F:src/api/upload.rs†L600-L687】
+commit endpoint waits for in-flight parts to finish. Finalization now happens in
+an asynchronous job that clears the `pending_finalize` flag on completion and
+updates the cache entry size when an explicit value is provided.【F:src/meta/mod.rs†L136-L200】【F:src/api/upload.rs†L333-L470】【F:src/jobs/finalize.rs†L13-L138】
 
 ### States
 
@@ -136,7 +148,8 @@ commit endpoint waits for in-flight parts to finish.【F:src/meta/mod.rs†L136-
   streaming starts. Once an upload enters `uploading` it remains there until it
   is finalized or reset administratively.【F:src/api/upload.rs†L333-L470】
 - `finalizing` &mdash; the commit endpoint reserved the upload and is validating the
-  recorded parts before completing the multipart upload in the blob store.【F:src/api/upload.rs†L600-L664】
+  recorded parts before completing the multipart upload in the blob store. The
+  asynchronous job enters this state once no active parts remain.【F:src/jobs/finalize.rs†L36-L111】
 - `completed` &mdash; the backing store acknowledged the multipart completion and no
   more writes are accepted.【F:src/api/upload.rs†L665-L687】
 

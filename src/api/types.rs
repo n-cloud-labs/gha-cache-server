@@ -214,6 +214,7 @@ impl TryFrom<cache::FinalizeCacheEntryUploadRequest> for TwirpFinalizeReq {
 pub struct TwirpFinalizeResp {
     pub ok: bool,
     pub entry_id: i64,
+    pub pending_finalize: bool,
 }
 
 pub(crate) fn uuid_to_i64(uuid: Uuid) -> i64 {
@@ -227,6 +228,7 @@ impl From<TwirpFinalizeResp> for cache::FinalizeCacheEntryUploadResponse {
         Self {
             ok: value.ok,
             entry_id: value.entry_id,
+            pending_finalize: value.pending_finalize,
         }
     }
 }

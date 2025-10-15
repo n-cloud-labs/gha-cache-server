@@ -595,56 +595,12 @@ pub(crate) fn body_to_blob_payload(body: axum::body::Body) -> BlobUploadPayload 
     body.into_data_stream().map_err(anyhow::Error::from).boxed()
 }
 
-pub(crate) fn ensure_all_parts_uploaded(
-    parts: &[meta::UploadPartRecord],
-    expected_size: Option<i64>,
-) -> Result<()> {
-    if parts.is_empty() {
-        return Err(ApiError::BadRequest(
-            "multipart upload must include at least one part".into(),
-        ));
-    }
-    let mut expected_offset = 0i64;
-    for (index, part) in parts.iter().enumerate() {
-        let expected_index = index as i32;
-        let expected_part_number = expected_index + 1;
-        if part.part_index != expected_index {
-            return Err(ApiError::BadRequest(format!(
-                "missing part {expected_part_number} before finalization"
-            )));
-        }
-        if part.offset != expected_offset {
-            return Err(ApiError::BadRequest(format!(
-                "unexpected offset for part {}",
-                part.part_number
-            )));
-        }
-        if part.size <= 0 {
-            return Err(ApiError::BadRequest(format!(
-                "invalid size recorded for part {}",
-                part.part_number
-            )));
-        }
-        expected_offset = expected_offset
-            .checked_add(part.size)
-            .ok_or_else(|| ApiError::BadRequest("upload size overflow".into()))?;
-    }
-    if let Some(total) = expected_size
-        && total != expected_offset
-    {
-        return Err(ApiError::BadRequest(
-            "uploaded parts do not match expected size".into(),
-        ));
-    }
-    Ok(())
-}
-
 // ====== actions/cache: POST /_apis/artifactcache/caches/:id { size } ======
 pub async fn commit_cache(
     State(st): State<AppState>,
     Path(id): Path<String>,
     Json(req): Json<serde_json::Value>,
-) -> Result<StatusCode> {
+) -> Result<(StatusCode, Json<serde_json::Value>)> {
     let uuid = resolve_cache_id(&st, &id).await?;
     let query = rewrite_placeholders(
         "SELECT upload_id, storage_key FROM cache_uploads u JOIN cache_entries e ON e.id = u.entry_id WHERE e.id = ?",
@@ -656,107 +612,43 @@ pub async fn commit_cache(
         .await?;
     let upload_id: String = rec.try_get("upload_id")?;
     let storage_key: String = rec.try_get("storage_key")?;
+
+    let status = meta::get_upload_status(&st.pool, st.database_driver, &upload_id).await?;
+    if status.pending_finalize {
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({
+                "pendingFinalize": true,
+            })),
+        ));
+    }
     if let Err(err) =
         meta::set_pending_finalize(&st.pool, st.database_driver, &upload_id, true).await
     {
         return Err(err.into());
     }
 
-    if let Err(err) = meta::wait_for_no_active_parts(&st.pool, st.database_driver, &upload_id).await
-    {
-        let _ = meta::set_pending_finalize(&st.pool, st.database_driver, &upload_id, false).await;
-        return Err(err.into());
-    }
-
-    let reserved = meta::transition_upload_state(
-        &st.pool,
-        st.database_driver,
-        &upload_id,
-        &["reserved", "ready", "uploading"],
-        "finalizing",
-    )
-    .await?;
-    if !reserved {
-        let _ = meta::set_pending_finalize(&st.pool, st.database_driver, &upload_id, false).await;
-        return Err(ApiError::BadRequest(
-            "upload is still receiving parts".into(),
-        ));
-    }
-
     let expected_size = req.get("size").and_then(|v| v.as_i64());
-    let parts = meta::get_completed_parts(&st.pool, st.database_driver, &upload_id).await?;
-    if let Err(err) = ensure_all_parts_uploaded(&parts, expected_size) {
-        let _ = meta::transition_upload_state(
-            &st.pool,
-            st.database_driver,
-            &upload_id,
-            &["finalizing"],
-            "uploading",
-        )
-        .await;
-        let _ = meta::set_pending_finalize(&st.pool, st.database_driver, &upload_id, false).await;
-        return Err(err);
-    }
-
-    let complete_result = st
-        .store
-        .complete_multipart(
-            &storage_key,
-            &upload_id,
-            parts
-                .iter()
-                .map(|part| (part.part_number, part.etag.clone()))
-                .collect(),
-        )
-        .await;
-    match complete_result {
-        Ok(()) => {
-            let finalized = meta::transition_upload_state(
-                &st.pool,
-                st.database_driver,
-                &upload_id,
-                &["finalizing"],
-                "completed",
-            )
-            .await?;
-            if !finalized {
-                let _ = meta::set_pending_finalize(&st.pool, st.database_driver, &upload_id, false)
-                    .await;
-                return Err(ApiError::Internal(
-                    "failed to record completed upload state".into(),
-                ));
-            }
+    let job_state = st.clone();
+    let job = crate::jobs::finalize::FinalizeUploadJob::new(
+        job_state,
+        uuid,
+        upload_id.clone(),
+        storage_key.clone(),
+        expected_size,
+    );
+    tokio::spawn(async move {
+        if let Err(err) = crate::jobs::finalize::run(job).await {
+            tracing::error!(?err, upload_id = %upload_id, "finalize upload job failed");
         }
-        Err(err) => {
-            let _ = meta::transition_upload_state(
-                &st.pool,
-                st.database_driver,
-                &upload_id,
-                &["finalizing"],
-                "uploading",
-            )
-            .await;
-            let _ =
-                meta::set_pending_finalize(&st.pool, st.database_driver, &upload_id, false).await;
-            return Err(ApiError::S3(format!("{err}")));
-        }
-    }
+    });
 
-    let _ = meta::set_pending_finalize(&st.pool, st.database_driver, &upload_id, false).await;
-
-    // Persist size if provided
-    if let Some(size) = expected_size {
-        let update_query = rewrite_placeholders(
-            "UPDATE cache_entries SET size_bytes = ? WHERE id = ?",
-            st.database_driver,
-        );
-        sqlx::query(&update_query)
-            .bind(size)
-            .bind(uuid.to_string())
-            .execute(&st.pool)
-            .await?;
-    }
-    Ok(StatusCode::CREATED)
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({
+            "pendingFinalize": true,
+        })),
+    ))
 }
 
 #[cfg(test)]
@@ -775,7 +667,7 @@ mod tests {
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
-    use tokio::time::sleep;
+    use tokio::time::{sleep, timeout};
     use url::Url;
 
     #[derive(Clone, Default)]
@@ -982,53 +874,6 @@ mod tests {
         assert_eq!(parsed, vec!["primary", "fallback"]);
     }
 
-    #[test]
-    fn ensure_all_parts_uploaded_accepts_contiguous_sequence() {
-        let parts = vec![
-            meta::UploadPartRecord {
-                part_index: 0,
-                part_number: 1,
-                offset: 0,
-                size: 10,
-                etag: "etag-1".into(),
-            },
-            meta::UploadPartRecord {
-                part_index: 1,
-                part_number: 2,
-                offset: 10,
-                size: 5,
-                etag: "etag-2".into(),
-            },
-        ];
-        assert!(ensure_all_parts_uploaded(&parts, Some(15)).is_ok());
-    }
-
-    #[test]
-    fn ensure_all_parts_uploaded_rejects_gaps() {
-        let parts = vec![
-            meta::UploadPartRecord {
-                part_index: 0,
-                part_number: 1,
-                offset: 0,
-                size: 10,
-                etag: "etag-1".into(),
-            },
-            meta::UploadPartRecord {
-                part_index: 2,
-                part_number: 3,
-                offset: 10,
-                size: 5,
-                etag: "etag-3".into(),
-            },
-        ];
-        let err = ensure_all_parts_uploaded(&parts, None).expect_err("gap should be rejected");
-        if let ApiError::BadRequest(message) = err {
-            assert!(message.contains("missing part 2"));
-        } else {
-            panic!("unexpected error variant");
-        }
-    }
-
     #[tokio::test]
     async fn commit_waits_for_in_flight_parts() {
         sqlx::any::install_default_drivers();
@@ -1091,19 +936,26 @@ mod tests {
             .await
             .expect("begin part upload");
 
-        let commit_state = state.clone();
-        let cache_id = entry.id.to_string();
-        let commit_handle = tokio::spawn(async move {
-            commit_cache(
-                State(commit_state),
-                Path(cache_id),
-                Json(json!({ "size": 3 })),
-            )
-            .await
-        });
+        let (status, Json(body)) = commit_cache(
+            State(state.clone()),
+            Path(entry.id.to_string()),
+            Json(json!({ "size": 3 })),
+        )
+        .await
+        .expect("commit result");
+
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(
+            body.get("pendingFinalize"),
+            Some(&serde_json::Value::Bool(true))
+        );
 
         sleep(Duration::from_millis(100)).await;
-        assert!(!commit_handle.is_finished(), "commit should wait for parts");
+        assert_eq!(
+            store.finalized_count(),
+            0,
+            "finalize job should wait for parts"
+        );
 
         meta::complete_part(
             &pool,
@@ -1120,17 +972,29 @@ mod tests {
             .expect("finish part upload");
         assert_eq!(remaining, 0);
 
-        let status = commit_handle
-            .await
-            .expect("join commit task")
-            .expect("commit result");
-        assert_eq!(status, StatusCode::CREATED);
-        assert_eq!(store.finalized_count(), 1);
+        timeout(Duration::from_secs(1), async {
+            loop {
+                if store.finalized_count() == 1 {
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("finalize job completed");
 
         let upload_status = meta::get_upload_status(&pool, DatabaseDriver::Sqlite, &upload_id)
             .await
             .expect("fetch upload status");
         assert_eq!(upload_status.active_part_count, 0);
+        assert_eq!(upload_status.state, "completed");
         assert!(!upload_status.pending_finalize);
+
+        let size: i64 = sqlx::query_scalar("SELECT size_bytes FROM cache_entries WHERE id = ?")
+            .bind(entry.id.to_string())
+            .fetch_one(&pool)
+            .await
+            .expect("fetch size");
+        assert_eq!(size, 3);
     }
 }
