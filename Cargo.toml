@@ -16,6 +16,7 @@ async-trait = { version = "0.1" }
 aws-config = { version = "1" }
 aws-lc-rs = { version = "=1.14.0" }
 aws-sdk-s3 = { version = "1" }
+aws-smithy-runtime-api = { version = "1" }
 aws-smithy-types = { version = "1" }
 axum = { version = "0.8", features = ["macros"] }
 base64 = { version = "0.22" }
@@ -41,6 +42,8 @@ prost = { version = "0.13" }
 rand = { version = "0.8" }
 rsa = { version = "0.9", features = ["sha2"] }
 rustls = { version = "0.23.32" }
+rustls-native-certs = { version = "0.8" }
+rustls-pemfile = { version = "2" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1" }
 sha2 = { version = "0.10" }

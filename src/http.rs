@@ -126,7 +126,9 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::api::proxy::{self, ProxyHttpClient, RESULTS_RECEIVER_ORIGIN};
-    use crate::config::{BlobStoreSelector, CleanupSettings, Config, DatabaseDriver, S3Config};
+    use crate::config::{
+        BlobStoreSelector, CleanupSettings, Config, DatabaseDriver, S3Config, S3TlsConfig,
+    };
     use crate::storage::{BlobDownloadStream, BlobStore, PresignedUrl};
 
     #[derive(Clone, Debug)]
@@ -255,6 +257,10 @@ mod tests {
                 region: "us-east-1".into(),
                 endpoint_url: None,
                 force_path_style: true,
+                tls: S3TlsConfig {
+                    accept_invalid_certs: false,
+                    custom_ca_bundle: None,
+                },
             }),
             fs: None,
             gcs: None,

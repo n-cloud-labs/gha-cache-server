@@ -13,6 +13,12 @@ The server supports pluggable blob storage. Select the implementation via the
   * `AWS_REGION` (defaults to `us-east-1`)
   * `AWS_ENDPOINT_URL` (optional)
   * `S3_FORCE_PATH_STYLE` (defaults to `true`)
+  * `AWS_TLS_CA_BUNDLE` – optional path to a PEM file containing additional
+    root certificates that should be trusted when connecting to the custom
+    endpoint.
+  * `AWS_TLS_INSECURE` – optional flag (set to `true` to enable) that disables
+    TLS certificate validation. This should only be used for development or
+    testing because it accepts self-signed or otherwise invalid certificates.
 * `gcs` – store cache archives in Google Cloud Storage. This mode requires a
   dedicated bucket and service account credentials (see below).
 
