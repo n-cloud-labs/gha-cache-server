@@ -343,11 +343,15 @@ pub async fn finalize_cache_entry_upload(
         storage_key.clone(),
         None,
     );
-    tokio::spawn(async move {
-        if let Err(err) = crate::jobs::finalize::run(job).await {
-            tracing::error!(?err, upload_id = %upload_id, "finalize upload job failed");
-        }
-    });
+    if st.defer_finalize_in_background {
+        tokio::spawn(async move {
+            if let Err(err) = crate::jobs::finalize::run(job).await {
+                tracing::error!(?err, upload_id = %upload_id, "finalize upload job failed");
+            }
+        });
+    } else if let Err(err) = crate::jobs::finalize::run(job).await {
+        tracing::error!(?err, upload_id = %upload_id, "finalize upload job failed");
+    }
 
     Ok(TwirpResponse::new(
         TwirpFinalizeResp {

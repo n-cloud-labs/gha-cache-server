@@ -91,6 +91,7 @@ impl TestServer {
         let cfg = Config {
             port: 0,
             enable_direct_downloads: false,
+            defer_finalize_in_background: true,
             request_timeout: Duration::from_secs(30),
             max_concurrency: 16,
             database_url: "sqlite::memory:?cache=shared".into(),

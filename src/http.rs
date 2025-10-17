@@ -22,6 +22,7 @@ pub struct AppState {
     pub pool: AnyPool,
     pub store: Arc<dyn BlobStore>,
     pub enable_direct: bool,
+    pub defer_finalize_in_background: bool,
     pub proxy_client: Arc<dyn proxy::ProxyHttpClient>,
     pub database_driver: DatabaseDriver,
 }
@@ -42,6 +43,7 @@ pub(crate) fn build_router_with_proxy(
         pool: pool.clone(),
         store,
         enable_direct: cfg.enable_direct_downloads,
+        defer_finalize_in_background: cfg.defer_finalize_in_background,
         proxy_client,
         database_driver: cfg.database_driver,
     };
@@ -249,6 +251,7 @@ mod tests {
         Config {
             port: 8080,
             enable_direct_downloads: true,
+            defer_finalize_in_background: true,
             request_timeout: Duration::from_secs(30),
             max_concurrency: 16,
             database_url: "postgres://localhost/test".into(),

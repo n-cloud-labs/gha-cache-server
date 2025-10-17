@@ -16,6 +16,8 @@ sensible defaults to help local development:
 - `REQUEST_TIMEOUT_SECS` – request timeout applied by the tower middleware.
 - `ENABLE_DIRECT_DOWNLOADS` – toggle direct download URLs when supported by the
   blob backend.
+- `DEFER_FINALIZE_IN_BACKGROUND` – controls whether upload finalization runs in
+  the background. Set to `false` to finalize uploads synchronously.
 - `BLOB_STORE` – selects the blob storage backend (`fs`, `s3` or `gcs`).
 - `FS_ROOT` – storage path used by the filesystem backend. A persistent volume is
   declared for `/var/lib/gha-cache-server` so that `BLOB_STORE=fs` survives
