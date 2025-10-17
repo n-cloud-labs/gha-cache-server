@@ -638,11 +638,17 @@ pub async fn commit_cache(
                 tracing::error!(?err, upload_id = %upload_id, "finalize upload job failed");
             }
         });
-    } else if let Err(err) = crate::jobs::finalize::run(job).await {
-        tracing::error!(?err, upload_id = %upload_id, "finalize upload job failed");
-    }
 
-    Ok(StatusCode::CREATED)
+        Ok(StatusCode::CREATED)
+    } else {
+        match crate::jobs::finalize::run(job).await {
+            Ok(()) => Ok(StatusCode::CREATED),
+            Err(err) => {
+                tracing::error!(?err, upload_id = %upload_id, "finalize upload job failed");
+                Err(err)
+            }
+        }
+    }
 }
 
 #[cfg(test)]

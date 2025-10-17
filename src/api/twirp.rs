@@ -349,17 +349,29 @@ pub async fn finalize_cache_entry_upload(
                 tracing::error!(?err, upload_id = %upload_id, "finalize upload job failed");
             }
         });
-    } else if let Err(err) = crate::jobs::finalize::run(job).await {
-        tracing::error!(?err, upload_id = %upload_id, "finalize upload job failed");
-    }
 
-    Ok(TwirpResponse::new(
-        TwirpFinalizeResp {
-            ok: true,
-            entry_id: uuid_to_i64(entry.id),
-        },
-        format,
-    ))
+        Ok(TwirpResponse::new(
+            TwirpFinalizeResp {
+                ok: true,
+                entry_id: uuid_to_i64(entry.id),
+            },
+            format,
+        ))
+    } else {
+        match crate::jobs::finalize::run(job).await {
+            Ok(()) => Ok(TwirpResponse::new(
+                TwirpFinalizeResp {
+                    ok: true,
+                    entry_id: uuid_to_i64(entry.id),
+                },
+                format,
+            )),
+            Err(err) => {
+                tracing::error!(?err, upload_id = %upload_id, "finalize upload job failed");
+                Err(err)
+            }
+        }
+    }
 }
 
 // POST /twirp/.../GetCacheEntryDownloadURL
