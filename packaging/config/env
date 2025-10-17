@@ -10,6 +10,9 @@ DATABASE_URL=sqlite:///var/lib/gha-cache-server/cache.db
 # Toggle direct download URLs. Accepts "true" or "false" and defaults to "true".
 #ENABLE_DIRECT_DOWNLOADS=true
 
+# Toggle background upload finalization. Accepts "true" or "false" and defaults to "true".
+#DEFER_FINALIZE_IN_BACKGROUND=true
+
 # Maximum number of concurrent upload/download operations (defaults to 64).
 #MAX_CONCURRENCY=64
 

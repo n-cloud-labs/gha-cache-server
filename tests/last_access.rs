@@ -168,6 +168,7 @@ fn build_state(pool: AnyPool, store: TestStore, enable_direct: bool) -> AppState
         pool,
         store: Arc::new(store),
         enable_direct,
+        defer_finalize_in_background: true,
         proxy_client: Arc::new(DummyProxyClient),
         database_driver: DatabaseDriver::Sqlite,
     }

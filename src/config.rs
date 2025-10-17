@@ -81,6 +81,7 @@ pub struct CleanupSettings {
 pub struct Config {
     pub port: u16,
     pub enable_direct_downloads: bool,
+    pub defer_finalize_in_background: bool,
     pub request_timeout: Duration,
     pub max_concurrency: usize,
 
@@ -231,6 +232,8 @@ impl Config {
                 .unwrap_or(8080),
             enable_direct_downloads: std::env::var("ENABLE_DIRECT_DOWNLOADS")
                 .map(|v| v == "true")
+                .unwrap_or(true),
+            defer_finalize_in_background: parse_env_bool("DEFER_FINALIZE_IN_BACKGROUND")?
                 .unwrap_or(true),
             request_timeout: std::env::var("REQUEST_TIMEOUT_SECS")
                 .ok()

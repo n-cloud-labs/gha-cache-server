@@ -632,11 +632,15 @@ pub async fn commit_cache(
         storage_key.clone(),
         expected_size,
     );
-    tokio::spawn(async move {
-        if let Err(err) = crate::jobs::finalize::run(job).await {
-            tracing::error!(?err, upload_id = %upload_id, "finalize upload job failed");
-        }
-    });
+    if st.defer_finalize_in_background {
+        tokio::spawn(async move {
+            if let Err(err) = crate::jobs::finalize::run(job).await {
+                tracing::error!(?err, upload_id = %upload_id, "finalize upload job failed");
+            }
+        });
+    } else if let Err(err) = crate::jobs::finalize::run(job).await {
+        tracing::error!(?err, upload_id = %upload_id, "finalize upload job failed");
+    }
 
     Ok(StatusCode::CREATED)
 }
@@ -882,6 +886,7 @@ mod tests {
             pool: pool.clone(),
             store: store.clone() as Arc<dyn BlobStore>,
             enable_direct: false,
+            defer_finalize_in_background: true,
             proxy_client: Arc::new(DummyProxyClient) as Arc<dyn ProxyHttpClient>,
             database_driver: DatabaseDriver::Sqlite,
         };
