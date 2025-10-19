@@ -619,13 +619,16 @@ pub async fn reserve_part(
     } else {
         let sum_query = match driver {
             DatabaseDriver::Postgres => {
-                "SELECT COALESCE(SUM(size), 0)::bigint FROM cache_upload_parts WHERE upload_id = ?"
+                "SELECT COALESCE(SUM(size), 0)::bigint FROM cache_upload_parts WHERE upload_id = ? AND part_index < ?"
             }
-            _ => "SELECT COALESCE(SUM(size), 0) FROM cache_upload_parts WHERE upload_id = ?",
+            _ => {
+                "SELECT COALESCE(SUM(size), 0) FROM cache_upload_parts WHERE upload_id = ? AND part_index < ?"
+            }
         };
         let sum_query = rewrite_placeholders(sum_query, driver);
         sqlx::query_scalar(&sum_query)
             .bind(upload_id)
+            .bind(part_index)
             .fetch_one(&mut *tx)
             .await?
     };
