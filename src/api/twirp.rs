@@ -319,7 +319,7 @@ pub async fn finalize_cache_entry_upload(
     let upload_id: String = rec.try_get("upload_id")?;
     let storage_key: String = rec.try_get("storage_key")?;
 
-    let status = meta::get_upload_status(&st.pool, st.database_driver, &upload_id).await?;
+    let mut status = meta::get_upload_status(&st.pool, st.database_driver, &upload_id).await?;
     if status.pending_finalize {
         return Ok(TwirpResponse::new(
             TwirpFinalizeResp {
@@ -335,6 +335,15 @@ pub async fn finalize_cache_entry_upload(
         return Err(err.into());
     }
 
+    let run_in_background = if st.defer_finalize_in_background {
+        status = meta::get_upload_status(&st.pool, st.database_driver, &upload_id).await?;
+        let completed_parts =
+            meta::get_completed_part_count(&st.pool, st.database_driver, &upload_id).await?;
+        !(status.active_part_count == 0 && completed_parts == 1)
+    } else {
+        false
+    };
+
     let job_state = st.clone();
     let job = crate::jobs::finalize::FinalizeUploadJob::new(
         job_state,
@@ -343,7 +352,7 @@ pub async fn finalize_cache_entry_upload(
         storage_key.clone(),
         None,
     );
-    if st.defer_finalize_in_background {
+    if run_in_background {
         tokio::spawn(async move {
             if let Err(err) = crate::jobs::finalize::run(job).await {
                 tracing::error!(?err, upload_id = %upload_id, "finalize upload job failed");

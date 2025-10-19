@@ -766,6 +766,23 @@ pub async fn get_completed_parts(
         .collect()
 }
 
+pub async fn get_completed_part_count(
+    pool: &AnyPool,
+    driver: DatabaseDriver,
+    upload_id: &str,
+) -> Result<i64, sqlx::Error> {
+    let query = rewrite_placeholders(
+        "SELECT COUNT(*) AS count FROM cache_upload_parts WHERE upload_id = ? AND state = ?",
+        driver,
+    );
+    let count = sqlx::query_scalar::<_, i64>(&query)
+        .bind(upload_id)
+        .bind("completed")
+        .fetch_one(pool)
+        .await?;
+    Ok(count)
+}
+
 pub async fn transition_to_uploading(
     pool: &AnyPool,
     database_driver: DatabaseDriver,
