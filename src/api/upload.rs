@@ -608,7 +608,7 @@ pub async fn commit_cache(
     let upload_id: String = rec.try_get("upload_id")?;
     let storage_key: String = rec.try_get("storage_key")?;
 
-    let status = meta::get_upload_status(&st.pool, st.database_driver, &upload_id).await?;
+    let mut status = meta::get_upload_status(&st.pool, st.database_driver, &upload_id).await?;
     if status.pending_finalize {
         return Ok(StatusCode::CREATED);
     }
@@ -617,6 +617,15 @@ pub async fn commit_cache(
     {
         return Err(err.into());
     }
+
+    let run_in_background = if st.defer_finalize_in_background {
+        status = meta::get_upload_status(&st.pool, st.database_driver, &upload_id).await?;
+        let completed_parts =
+            meta::get_completed_part_count(&st.pool, st.database_driver, &upload_id).await?;
+        !(status.active_part_count == 0 && completed_parts == 1)
+    } else {
+        false
+    };
 
     let expected_size = req.get("size").and_then(|v| v.as_i64());
     let job_state = st.clone();
@@ -627,7 +636,7 @@ pub async fn commit_cache(
         storage_key.clone(),
         expected_size,
     );
-    if st.defer_finalize_in_background {
+    if run_in_background {
         tokio::spawn(async move {
             if let Err(err) = crate::jobs::finalize::run(job).await {
                 tracing::error!(?err, upload_id = %upload_id, "finalize upload job failed");
@@ -863,6 +872,106 @@ mod tests {
         let raw = "primary, fallback, primary ,".to_string();
         let parsed = parse_keys_parameter(Some(&raw)).expect("keys");
         assert_eq!(parsed, vec!["primary", "fallback"]);
+    }
+
+    #[tokio::test]
+    async fn commit_single_part_runs_synchronously() {
+        sqlx::any::install_default_drivers();
+        let pool = AnyPoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect sqlite");
+        sqlx::migrate!("./migrations/sqlite")
+            .run(&pool)
+            .await
+            .expect("run migrations");
+
+        let store = Arc::new(FinalizeStore::default());
+        let state = AppState {
+            pool: pool.clone(),
+            store: store.clone() as Arc<dyn BlobStore>,
+            enable_direct: false,
+            defer_finalize_in_background: true,
+            proxy_client: Arc::new(DummyProxyClient) as Arc<dyn ProxyHttpClient>,
+            database_driver: DatabaseDriver::Sqlite,
+        };
+
+        let entry = meta::create_entry(
+            &pool,
+            DatabaseDriver::Sqlite,
+            "org",
+            "repo",
+            "key",
+            "v1",
+            "_",
+            "storage",
+        )
+        .await
+        .expect("create entry");
+        let upload_id = Uuid::new_v4().to_string();
+        meta::upsert_upload(
+            &pool,
+            DatabaseDriver::Sqlite,
+            entry.id,
+            &upload_id,
+            "reserved",
+        )
+        .await
+        .expect("create upload");
+        let uploading = meta::transition_upload_state(
+            &pool,
+            DatabaseDriver::Sqlite,
+            &upload_id,
+            &["reserved"],
+            "uploading",
+        )
+        .await
+        .expect("transition to uploading");
+        assert!(uploading);
+
+        meta::reserve_part(&pool, DatabaseDriver::Sqlite, &upload_id, 0, Some(0), 3)
+            .await
+            .expect("reserve part");
+        meta::begin_part_upload(&pool, DatabaseDriver::Sqlite, &upload_id)
+            .await
+            .expect("begin part upload");
+        meta::complete_part(
+            &pool,
+            DatabaseDriver::Sqlite,
+            &upload_id,
+            0,
+            Some(0),
+            "etag",
+        )
+        .await
+        .expect("complete part");
+        let remaining = meta::finish_part_upload(&pool, DatabaseDriver::Sqlite, &upload_id)
+            .await
+            .expect("finish part upload");
+        assert_eq!(remaining, 0);
+
+        let status = commit_cache(
+            State(state.clone()),
+            Path(entry.id.to_string()),
+            Json(json!({ "size": 3 })),
+        )
+        .await
+        .expect("commit result");
+
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(
+            store.finalized_count(),
+            1,
+            "finalize job should run synchronously for a single part",
+        );
+
+        let upload_status = meta::get_upload_status(&pool, DatabaseDriver::Sqlite, &upload_id)
+            .await
+            .expect("fetch upload status");
+        assert_eq!(upload_status.active_part_count, 0);
+        assert_eq!(upload_status.state, "completed");
+        assert!(!upload_status.pending_finalize);
     }
 
     #[tokio::test]
