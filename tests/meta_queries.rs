@@ -246,6 +246,88 @@ async fn concurrent_part_updates_are_ordered() {
 }
 
 #[tokio::test]
+async fn reserve_part_without_offset_reuses_ordered_offsets() {
+    let pool = setup_pool().await;
+    let entry = create_entry(&pool, "reupload").await;
+    let upload_id = Uuid::new_v4().to_string();
+
+    meta::upsert_upload(
+        &pool,
+        DatabaseDriver::Sqlite,
+        entry.id,
+        &upload_id,
+        "reserved",
+    )
+    .await
+    .expect("create upload");
+
+    meta::transition_upload_state(
+        &pool,
+        DatabaseDriver::Sqlite,
+        &upload_id,
+        &["reserved"],
+        "uploading",
+    )
+    .await
+    .expect("transition to uploading");
+
+    let offset_first = meta::reserve_part(&pool, DatabaseDriver::Sqlite, &upload_id, 0, None, 4)
+        .await
+        .expect("reserve first part");
+    assert_eq!(offset_first, 0);
+    meta::complete_part(
+        &pool,
+        DatabaseDriver::Sqlite,
+        &upload_id,
+        0,
+        Some(offset_first),
+        "etag-0",
+    )
+    .await
+    .expect("complete first part");
+
+    let offset_second = meta::reserve_part(&pool, DatabaseDriver::Sqlite, &upload_id, 1, None, 6)
+        .await
+        .expect("reserve second part");
+    assert_eq!(offset_second, 4);
+    meta::complete_part(
+        &pool,
+        DatabaseDriver::Sqlite,
+        &upload_id,
+        1,
+        Some(offset_second),
+        "etag-1",
+    )
+    .await
+    .expect("complete second part");
+
+    let offset_first_reupload =
+        meta::reserve_part(&pool, DatabaseDriver::Sqlite, &upload_id, 0, None, 4)
+            .await
+            .expect("reserve first part reupload");
+    assert_eq!(offset_first_reupload, 0);
+    meta::complete_part(
+        &pool,
+        DatabaseDriver::Sqlite,
+        &upload_id,
+        0,
+        Some(offset_first_reupload),
+        "etag-0b",
+    )
+    .await
+    .expect("complete first part reupload");
+
+    let parts = meta::get_completed_parts(&pool, DatabaseDriver::Sqlite, &upload_id)
+        .await
+        .expect("fetch completed parts");
+    assert_eq!(parts.len(), 2);
+    assert_eq!(parts[0].part_number, 1);
+    assert_eq!(parts[0].offset, 0);
+    assert_eq!(parts[1].part_number, 2);
+    assert_eq!(parts[1].offset, 4);
+}
+
+#[tokio::test]
 async fn overlapping_part_uploads_hold_state_until_last_part_finishes() {
     let pool = setup_pool().await;
     let entry = create_entry(&pool, "overlap").await;
