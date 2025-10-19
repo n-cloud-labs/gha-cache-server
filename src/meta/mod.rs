@@ -583,55 +583,9 @@ pub async fn reserve_part(
     part_index: i32,
     offset: Option<i64>,
     size: i64,
-) -> Result<i64, sqlx::Error> {
+) -> Result<(), sqlx::Error> {
     let now = Utc::now().timestamp();
-    let mut tx: Transaction<'_, sqlx::Any> = pool.begin().await?;
-
-    match driver {
-        DatabaseDriver::Postgres | DatabaseDriver::Mysql => {
-            let lock_query = rewrite_placeholders(
-                "SELECT id FROM cache_uploads WHERE upload_id = ? FOR UPDATE",
-                driver,
-            );
-            sqlx::query(&lock_query)
-                .bind(upload_id)
-                .fetch_one(&mut *tx)
-                .await?;
-        }
-        DatabaseDriver::Sqlite => {
-            let lock_query = rewrite_placeholders(
-                "UPDATE cache_uploads SET updated_at = updated_at WHERE upload_id = ?",
-                driver,
-            );
-            let result = sqlx::query(&lock_query)
-                .bind(upload_id)
-                .execute(&mut *tx)
-                .await?;
-            if result.rows_affected() == 0 {
-                tx.rollback().await.ok();
-                return Err(sqlx::Error::RowNotFound);
-            }
-        }
-    }
-
-    let resolved_offset = if let Some(value) = offset {
-        value
-    } else {
-        let sum_query = match driver {
-            DatabaseDriver::Postgres => {
-                "SELECT COALESCE(SUM(size), 0)::bigint FROM cache_upload_parts WHERE upload_id = ? AND part_index < ?"
-            }
-            _ => {
-                "SELECT COALESCE(SUM(size), 0) FROM cache_upload_parts WHERE upload_id = ? AND part_index < ?"
-            }
-        };
-        let sum_query = rewrite_placeholders(sum_query, driver);
-        sqlx::query_scalar(&sum_query)
-            .bind(upload_id)
-            .bind(part_index)
-            .fetch_one(&mut *tx)
-            .await?
-    };
+    let mut tx = pool.begin().await?;
 
     let insert_query = rewrite_placeholders(
         "INSERT INTO cache_upload_parts (upload_id, part_index, part_number, part_offset, size, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -642,7 +596,7 @@ pub async fn reserve_part(
         .bind(upload_id)
         .bind(part_index)
         .bind(part_number)
-        .bind(resolved_offset)
+        .bind(offset)
         .bind(size)
         .bind("pending")
         .bind(now)
@@ -653,7 +607,7 @@ pub async fn reserve_part(
     match insert {
         Ok(_) => {
             tx.commit().await?;
-            Ok(resolved_offset)
+            Ok(())
         }
         Err(err) => {
             if let sqlx::Error::Database(db_err) = &err {
@@ -663,7 +617,7 @@ pub async fn reserve_part(
                         driver,
                     );
                     sqlx::query(&update_query)
-                        .bind(resolved_offset)
+                        .bind(offset)
                         .bind(size)
                         .bind("pending")
                         .bind(now)
@@ -672,7 +626,7 @@ pub async fn reserve_part(
                         .execute(&mut *tx)
                         .await?;
                     tx.commit().await?;
-                    Ok(resolved_offset)
+                    Ok(())
                 } else {
                     tx.rollback().await.ok();
                     Err(err)

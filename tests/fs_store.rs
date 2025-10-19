@@ -1,4 +1,3 @@
-use std::convert::TryInto;
 use std::ffi::OsString;
 use std::path::PathBuf;
 
@@ -8,15 +7,13 @@ use futures::{StreamExt, stream};
 use gha_cache_server::storage::{BlobStore, BlobUploadPayload, fs::FsStore};
 use tempfile::TempDir;
 
-fn payload_from_bytes(chunks: Vec<&'static [u8]>) -> (BlobUploadPayload, usize) {
-    let total = chunks.iter().map(|chunk| chunk.len()).sum();
-    let stream = stream::iter(
+fn payload_from_bytes(chunks: Vec<&'static [u8]>) -> BlobUploadPayload {
+    stream::iter(
         chunks
             .into_iter()
             .map(|chunk| Ok(Bytes::from_static(chunk))),
     )
-    .boxed();
-    (stream, total)
+    .boxed()
 }
 
 #[cfg(target_os = "linux")]
@@ -44,41 +41,13 @@ async fn multipart_upload_writes_file() -> Result<()> {
     let store = FsStore::new(PathBuf::from(temp.path()), None, None, None).await?;
     let key = "artifacts/demo/cache.tgz";
 
-    let root = PathBuf::from(temp.path());
-    let uploads_root = if let Some(parent) = root.parent() {
-        let mut dir_name = OsString::from(".gha-cache-uploads");
-        if let Some(name) = root.file_name() {
-            dir_name.push("-");
-            dir_name.push(name);
-        }
-        parent.join(dir_name)
-    } else {
-        root.join(".gha-cache-uploads")
-    };
-
     let upload_id = store.create_multipart(key).await?;
 
-    let (part_one, part_one_len) = payload_from_bytes(vec![b"hello ", b"world"]);
-    let (part_two, part_two_len) = payload_from_bytes(vec![b" from fs store"]);
-    let part_one_len: i64 = part_one_len.try_into().unwrap();
-    let part_two_len: i64 = part_two_len.try_into().unwrap();
+    let part_one = payload_from_bytes(vec![b"hello ", b"world"]);
+    let part_two = payload_from_bytes(vec![b" from fs store"]);
 
-    let etag_one = store
-        .upload_part(key, &upload_id, 1, 0, part_one_len, part_one)
-        .await?;
-    let staging_file = uploads_root.join(&upload_id).join("complete.tmp");
-    assert!(
-        tokio::fs::try_exists(&staging_file).await?,
-        "staging file should exist after first part"
-    );
-    let legacy_part = uploads_root.join(&upload_id).join("part-00001.chunk");
-    assert!(
-        !tokio::fs::try_exists(&legacy_part).await?,
-        "legacy part files should not be created"
-    );
-    let etag_two = store
-        .upload_part(key, &upload_id, 2, part_one_len, part_two_len, part_two)
-        .await?;
+    let etag_one = store.upload_part(key, &upload_id, 1, part_one).await?;
+    let etag_two = store.upload_part(key, &upload_id, 2, part_two).await?;
 
     store
         .complete_multipart(
@@ -92,9 +61,20 @@ async fn multipart_upload_writes_file() -> Result<()> {
     let contents = tokio::fs::read(&final_path).await?;
     assert_eq!(contents, b"hello world from fs store");
 
+    let root = PathBuf::from(temp.path());
+    let uploads_root = if let Some(parent) = root.parent() {
+        let mut dir_name = OsString::from(".gha-cache-uploads");
+        if let Some(name) = root.file_name() {
+            dir_name.push("-");
+            dir_name.push(name);
+        }
+        parent.join(dir_name)
+    } else {
+        root.join(".gha-cache-uploads")
+    };
     let uploads_dir = uploads_root.join(&upload_id);
     assert!(
-        !tokio::fs::try_exists(&uploads_dir).await?,
+        !uploads_dir.exists(),
         "temporary upload directory should be cleaned up"
     );
 
@@ -124,10 +104,7 @@ async fn dropping_download_stream_releases_page_cache() -> Result<()> {
     .boxed();
 
     let upload_id = store.create_multipart(key).await?;
-    let total_size_i64: i64 = total_size.try_into().unwrap();
-    let etag = store
-        .upload_part(key, &upload_id, 1, 0, total_size_i64, payload)
-        .await?;
+    let etag = store.upload_part(key, &upload_id, 1, payload).await?;
     store
         .complete_multipart(key, &upload_id, vec![(1, etag)])
         .await?;
@@ -173,11 +150,8 @@ async fn respects_configured_permissions() -> Result<()> {
     let key = "caches/example.bin";
 
     let upload_id = store.create_multipart(key).await?;
-    let (payload, payload_len) = payload_from_bytes(vec![b"content"]);
-    let payload_len: i64 = payload_len.try_into().unwrap();
-    let etag = store
-        .upload_part(key, &upload_id, 1, 0, payload_len, payload)
-        .await?;
+    let payload = payload_from_bytes(vec![b"content"]);
+    let etag = store.upload_part(key, &upload_id, 1, payload).await?;
     store
         .complete_multipart(key, &upload_id, vec![(1, etag)])
         .await?;
@@ -198,11 +172,8 @@ async fn delete_removes_file_and_empty_directories() -> Result<()> {
     let key = "nested/path/cache.bin";
 
     let upload_id = store.create_multipart(key).await?;
-    let (payload, payload_len) = payload_from_bytes(vec![b"contents"]);
-    let payload_len: i64 = payload_len.try_into().unwrap();
-    let etag = store
-        .upload_part(key, &upload_id, 1, 0, payload_len, payload)
-        .await?;
+    let payload = payload_from_bytes(vec![b"contents"]);
+    let etag = store.upload_part(key, &upload_id, 1, payload).await?;
     store
         .complete_multipart(key, &upload_id, vec![(1, etag)])
         .await?;
@@ -232,11 +203,8 @@ async fn delete_is_idempotent_and_preserves_non_empty_dirs() -> Result<()> {
     let key = "keep/nested/cache.bin";
 
     let upload_id = store.create_multipart(key).await?;
-    let (payload, payload_len) = payload_from_bytes(vec![b"contents"]);
-    let payload_len: i64 = payload_len.try_into().unwrap();
-    let etag = store
-        .upload_part(key, &upload_id, 1, 0, payload_len, payload)
-        .await?;
+    let payload = payload_from_bytes(vec![b"contents"]);
+    let etag = store.upload_part(key, &upload_id, 1, payload).await?;
     store
         .complete_multipart(key, &upload_id, vec![(1, etag)])
         .await?;

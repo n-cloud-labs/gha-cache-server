@@ -336,8 +336,6 @@ impl BlobStore for S3Store {
         key: &str,
         upload_id: &str,
         part_number: i32,
-        _offset: i64,
-        _length: i64,
         body: BlobUploadPayload,
     ) -> anyhow::Result<String> {
         let body = Self::bytestream_from_stream(body.map_err(|err| -> SdkBodyError { err.into() }));

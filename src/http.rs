@@ -214,8 +214,6 @@ mod tests {
             _key: &str,
             _upload_id: &str,
             _part_number: i32,
-            _offset: i64,
-            _length: i64,
             _body: crate::storage::BlobUploadPayload,
         ) -> anyhow::Result<String> {
             unimplemented!("not required for tests")

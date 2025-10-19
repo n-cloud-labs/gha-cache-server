@@ -452,7 +452,7 @@ pub async fn upload_chunk(
             .await?;
     }
 
-    let stored_offset = match meta::reserve_part(
+    if let Err(err) = meta::reserve_part(
         &st.pool,
         st.database_driver,
         &upload_id,
@@ -462,12 +462,7 @@ pub async fn upload_chunk(
     )
     .await
     {
-        Ok(offset) => offset,
-        Err(err) => return Err(err.into()),
-    };
-
-    if stored_offset != offset {
-        return Err(ApiError::BadRequest("part offset mismatch".into()));
+        return Err(err.into());
     }
 
     if let Err(err) = meta::begin_part_upload(&st.pool, st.database_driver, &upload_id).await {
@@ -477,7 +472,7 @@ pub async fn upload_chunk(
     let bs = body_to_blob_payload(body);
     let etag = match st
         .store
-        .upload_part(&storage_key, &upload_id, part_number, offset, size, bs)
+        .upload_part(&storage_key, &upload_id, part_number, bs)
         .await
     {
         Ok(etag) => etag,
@@ -711,8 +706,6 @@ mod tests {
             _key: &str,
             _upload_id: &str,
             _part_number: i32,
-            _offset: i64,
-            _length: i64,
             _body: BlobUploadPayload,
         ) -> anyhow::Result<String> {
             unimplemented!("not required for tests")
@@ -769,8 +762,6 @@ mod tests {
             _key: &str,
             _upload_id: &str,
             _part_number: i32,
-            _offset: i64,
-            _length: i64,
             _body: BlobUploadPayload,
         ) -> anyhow::Result<String> {
             unimplemented!("not required for tests")

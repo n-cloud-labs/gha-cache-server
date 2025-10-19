@@ -1,20 +1,17 @@
-use std::collections::HashMap;
 use std::ffi::OsString;
-use std::io::{ErrorKind, SeekFrom};
+use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
 use std::task::{Context as TaskContext, Poll};
 use std::time::Duration;
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use sha2::{Digest, Sha256};
 use tokio::fs::{self, File, OpenOptions};
-use tokio::io::{self, AsyncSeekExt, AsyncWriteExt};
+use tokio::io::{self, AsyncWriteExt};
 use tokio::runtime::Handle;
-use tokio::sync::Mutex;
 use tokio::task;
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
@@ -27,10 +24,7 @@ pub struct FsStore {
     uploads_root: PathBuf,
     file_mode: Option<u32>,
     dir_mode: Option<u32>,
-    upload_locks: Arc<Mutex<HashMap<String, UploadLock>>>,
 }
-
-type UploadLock = Arc<Mutex<()>>;
 
 impl FsStore {
     pub async fn new(
@@ -58,7 +52,6 @@ impl FsStore {
             uploads_root,
             file_mode,
             dir_mode,
-            upload_locks: Arc::new(Mutex::new(HashMap::new())),
         };
 
         store
@@ -130,22 +123,6 @@ impl FsStore {
 
     fn staging_path(&self, upload_id: &str) -> PathBuf {
         self.upload_dir(upload_id).join("complete.tmp")
-    }
-
-    async fn get_upload_lock(&self, upload_id: &str) -> UploadLock {
-        let mut locks = self.upload_locks.lock().await;
-        if let Some(lock) = locks.get(upload_id) {
-            lock.clone()
-        } else {
-            let lock = Arc::new(Mutex::new(()));
-            locks.insert(upload_id.to_string(), lock.clone());
-            lock
-        }
-    }
-
-    async fn release_upload_lock(&self, upload_id: &str) {
-        let mut locks = self.upload_locks.lock().await;
-        locks.remove(upload_id);
     }
 
     fn destination_path(&self, key: &str) -> Result<PathBuf> {
@@ -245,65 +222,35 @@ impl BlobStore for FsStore {
         _key: &str,
         upload_id: &str,
         part_number: i32,
-        offset: i64,
-        length: i64,
         mut body: BlobUploadPayload,
     ) -> Result<String> {
-        ensure!(offset >= 0, "upload offset must be non-negative");
-        ensure!(length >= 0, "upload length must be non-negative");
-
-        let offset = offset as u64;
-        let expected_len = length as u64;
-
-        let staging_path = self.staging_path(upload_id);
-        if let Some(parent) = staging_path.parent() {
+        let part_path = self.part_path(upload_id, part_number);
+        if let Some(parent) = part_path.parent() {
             fs::create_dir_all(parent).await.with_context(|| {
                 format!("failed to prepare upload directory at {}", parent.display())
             })?;
             self.ensure_dir_mode(parent).await?;
         }
 
-        let lock = self.get_upload_lock(upload_id).await;
-        let _guard = lock.lock().await;
-
-        let legacy_part_path = self.part_path(upload_id, part_number);
-        if fs::try_exists(&legacy_part_path).await? {
-            let _ = fs::remove_file(&legacy_part_path).await;
-        }
-
         let mut hasher = Sha256::new();
         let mut file = OpenOptions::new()
             .create(true)
-            .read(true)
+            .truncate(true)
             .write(true)
-            .truncate(false)
-            .open(&staging_path)
+            .open(&part_path)
             .await
-            .with_context(|| format!("failed to open staging file {}", staging_path.display()))?;
+            .with_context(|| format!("failed to open part file {}", part_path.display()))?;
 
-        file.seek(SeekFrom::Start(offset)).await.with_context(|| {
-            format!("failed to seek in staging file {}", staging_path.display())
-        })?;
-
-        let mut written = 0u64;
         while let Some(chunk) = body.next().await {
             let bytes: Bytes = chunk?;
-            written = written
-                .checked_add(bytes.len() as u64)
-                .ok_or_else(|| anyhow::anyhow!("chunk size overflow"))?;
             hasher.update(&bytes);
             file.write_all(&bytes).await?;
         }
-        ensure!(
-            written == expected_len,
-            "uploaded chunk length mismatch (expected {expected_len}, wrote {written})"
-        );
-
         file.flush().await?;
         drop(file);
 
-        drop_page_cache(&staging_path).await?;
-        self.ensure_file_mode(&staging_path).await?;
+        drop_page_cache(&part_path).await?;
+        self.ensure_file_mode(&part_path).await?;
 
         let digest = hasher.finalize();
         let etag = digest.iter().map(|b| format!("{b:02x}")).collect();
@@ -320,103 +267,73 @@ impl BlobStore for FsStore {
             anyhow::bail!("multipart upload must include at least one part");
         }
 
-        let lock = self.get_upload_lock(upload_id).await;
-        let guard = lock.lock().await;
-
-        let result = async {
-            let staging_path = self.staging_path(upload_id);
-            if let Some(parent) = staging_path.parent() {
-                fs::create_dir_all(parent).await.with_context(|| {
-                    format!(
-                        "failed to prepare staging directory at {}",
-                        parent.display()
-                    )
-                })?;
-                self.ensure_dir_mode(parent).await?;
-            }
-
-            if fs::try_exists(&staging_path).await? {
-                let staging_file = OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .truncate(false)
-                    .open(&staging_path)
-                    .await
-                    .with_context(|| {
-                        format!("failed to open staging file {}", staging_path.display())
-                    })?;
-                staging_file.sync_data().await?;
-                drop(staging_file);
-            } else {
-                let mut output = OpenOptions::new()
-                    .create(true)
-                    .truncate(true)
-                    .write(true)
-                    .open(&staging_path)
-                    .await
-                    .with_context(|| {
-                        format!("failed to create staging file {}", staging_path.display())
-                    })?;
-
-                for (part_number, _) in &parts {
-                    let part_path = self.part_path(upload_id, *part_number);
-                    let mut part = OpenOptions::new()
-                        .read(true)
-                        .open(&part_path)
-                        .await
-                        .with_context(|| format!("missing part file {}", part_path.display()))?;
-                    io::copy(&mut part, &mut output).await?;
-                }
-                output.flush().await?;
-                output.sync_data().await?;
-                drop(output);
-            }
-
-            self.ensure_file_mode(&staging_path).await?;
-            drop_page_cache(&staging_path).await?;
-
-            let destination = self.destination_path(key)?;
-            if let Some(parent) = destination.parent() {
-                fs::create_dir_all(parent).await.with_context(|| {
-                    format!(
-                        "failed to create destination directory at {}",
-                        parent.display()
-                    )
-                })?;
-                self.ensure_dir_mode(parent).await?;
-            }
-
-            let finalize_err = || format!("failed to finalize upload to {}", destination.display());
-            match fs::rename(&staging_path, &destination).await {
-                Ok(()) => {}
-                Err(err) => {
-                    if Self::is_cross_device_error(&err) {
-                        fs::copy(&staging_path, &destination)
-                            .await
-                            .with_context(finalize_err)?;
-                        fs::remove_file(&staging_path).await.with_context(|| {
-                            format!("failed to remove staging file {}", staging_path.display())
-                        })?;
-                    } else {
-                        return Err(err).with_context(finalize_err);
-                    }
-                }
-            }
-            self.ensure_file_mode(&destination).await?;
-
-            let upload_dir = self.upload_dir(upload_id);
-            if upload_dir.as_path().exists() {
-                fs::remove_dir_all(&upload_dir).await.ok();
-            }
-
-            Ok(())
+        let staging_path = self.staging_path(upload_id);
+        if let Some(parent) = staging_path.parent() {
+            fs::create_dir_all(parent).await.with_context(|| {
+                format!(
+                    "failed to prepare staging directory at {}",
+                    parent.display()
+                )
+            })?;
+            self.ensure_dir_mode(parent).await?;
         }
-        .await;
 
-        drop(guard);
-        self.release_upload_lock(upload_id).await;
+        let mut output = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&staging_path)
+            .await
+            .with_context(|| format!("failed to create staging file {}", staging_path.display()))?;
 
-        result
+        for (part_number, _) in &parts {
+            let part_path = self.part_path(upload_id, *part_number);
+            let mut part = OpenOptions::new()
+                .read(true)
+                .open(&part_path)
+                .await
+                .with_context(|| format!("missing part file {}", part_path.display()))?;
+            io::copy(&mut part, &mut output).await?;
+        }
+        output.flush().await?;
+        drop(output);
+
+        drop_page_cache(&staging_path).await?;
+        let destination = self.destination_path(key)?;
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent).await.with_context(|| {
+                format!(
+                    "failed to create destination directory at {}",
+                    parent.display()
+                )
+            })?;
+            self.ensure_dir_mode(parent).await?;
+        }
+
+        let finalize_err = || format!("failed to finalize upload to {}", destination.display());
+        match fs::rename(&staging_path, &destination).await {
+            Ok(()) => {}
+            Err(err) => {
+                if Self::is_cross_device_error(&err) {
+                    fs::copy(&staging_path, &destination)
+                        .await
+                        .with_context(finalize_err)?;
+                    fs::remove_file(&staging_path).await.with_context(|| {
+                        format!("failed to remove staging file {}", staging_path.display())
+                    })?;
+                } else {
+                    return Err(err).with_context(finalize_err);
+                }
+            }
+        }
+        self.ensure_file_mode(&destination).await?;
+
+        let upload_dir = self.upload_dir(upload_id);
+        if upload_dir.as_path().exists() {
+            fs::remove_dir_all(&upload_dir).await.ok();
+        }
+
+        Ok(())
     }
 
     async fn presign_get(&self, _key: &str, _ttl: Duration) -> Result<Option<PresignedUrl>> {

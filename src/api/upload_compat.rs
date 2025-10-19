@@ -64,7 +64,7 @@ pub async fn put_upload(
             .await?;
     }
 
-    let offset = match meta::reserve_part(
+    if let Err(err) = meta::reserve_part(
         &st.pool,
         st.database_driver,
         &upload_id,
@@ -74,9 +74,8 @@ pub async fn put_upload(
     )
     .await
     {
-        Ok(offset) => offset,
-        Err(err) => return Err(err.into()),
-    };
+        return Err(err.into());
+    }
 
     if let Err(err) = meta::begin_part_upload(&st.pool, st.database_driver, &upload_id).await {
         return Err(err.into());
@@ -85,7 +84,7 @@ pub async fn put_upload(
     let bs = body_to_blob_payload(body);
     let etag = match st
         .store
-        .upload_part(&storage_key, &upload_id, part_no, offset, size, bs)
+        .upload_part(&storage_key, &upload_id, part_no, bs)
         .await
     {
         Ok(etag) => etag,
@@ -102,7 +101,7 @@ pub async fn put_upload(
         st.database_driver,
         &upload_id,
         part_no - 1,
-        Some(offset),
+        None,
         &etag,
     )
     .await
