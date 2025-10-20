@@ -1,3 +1,6 @@
+#[cfg(not(any(test, feature = "test-util")))]
+compile_error!("Enable the `test-util` feature to run these tests outside `cargo test`.");
+
 use chrono::Utc;
 use gha_cache_server::config::DatabaseDriver;
 use gha_cache_server::meta::{self, CacheEntry};

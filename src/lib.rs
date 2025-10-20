@@ -8,4 +8,6 @@ pub mod jobs;
 pub mod meta;
 pub mod obs;
 pub mod storage;
+
+#[cfg(any(test, feature = "test-util"))]
 pub mod test_support;
