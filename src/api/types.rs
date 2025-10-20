@@ -81,6 +81,21 @@ where
     deserializer.deserialize_option(OptionVisitor)
 }
 
+/// Represents a Twirp cache scope mapping to its permission value.
+///
+/// Scopes define repository authorization contexts supplied by clients when
+/// interacting with the cache Twirp API. The [`permission`] field stores the
+/// numeric level forwarded by GitHub Actions and is preserved verbatim when
+/// converting to or from the generated protobuf types.
+///
+/// # Examples
+/// ```
+/// use gha_cache_server::api::types::TwirpCacheScope;
+///
+/// let scope = TwirpCacheScope { scope: "pull".into(), permission: 1 };
+/// assert_eq!(scope.scope, "pull");
+/// assert_eq!(scope.permission, 1);
+/// ```
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct TwirpCacheScope {
     pub scope: String,
@@ -106,6 +121,32 @@ impl From<TwirpCacheScope> for cache::CacheScope {
     }
 }
 
+/// Describes repository metadata supplied with Twirp cache requests.
+///
+/// A metadata payload may omit the repository identifier, represented as
+/// `repository_id == 0` in the wire format, and includes any declared scopes.
+/// Conversions to and from the generated protobuf types normalize optional
+/// identifiers and preserve the scope ordering received from clients.
+///
+/// # Examples
+/// ```
+/// use gha_cache_server::api::proto::cache;
+/// use gha_cache_server::api::types::{TwirpCacheMetadata, TwirpCacheScope};
+///
+/// let proto = cache::CacheMetadata {
+///     repository_id: 0,
+///     scope: vec![cache::CacheScope {
+///         scope: "pull".into(),
+///         permission: 1,
+///     }],
+/// };
+/// let metadata = TwirpCacheMetadata::from(proto);
+/// assert!(metadata.repository_id.is_none());
+/// assert_eq!(metadata.scope[0].scope, "pull");
+///
+/// let roundtrip: cache::CacheMetadata = metadata.into();
+/// assert_eq!(roundtrip.scope.len(), 1);
+/// ```
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct TwirpCacheMetadata {
     #[serde(

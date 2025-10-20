@@ -1,3 +1,11 @@
+//! Defines the storage backends used for cache blob persistence.
+//!
+//! Storage implementations translate abstract blob operations into calls against
+//! filesystem, S3, or GCS providers while preserving shared invariants about
+//! multipart uploads. The [`BlobStore`] trait exposes the uniform contract that
+//! higher layers rely on when streaming payloads, obtaining presigned URLs, and
+//! cleaning up failed uploads.
+
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::BoxStream;
