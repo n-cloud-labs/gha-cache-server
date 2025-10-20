@@ -33,6 +33,19 @@ Maintainer: Alessandro Chitolina <alekitto@gmail.com>
 - Write all documentation in English.
 - Document new features as they are implemented; do not defer documentation updates to later changes.
 - Always ensure the appropriate documentation files accompany repository additions.
+- Follow the canonical documentation structure from `rust-guidelines.txt` for every public module and item. Each doc comment must
+  start with a concise summary sentence, then include the relevant `# Examples`, `# Errors`, `# Panics`, or `# Safety` sections as
+  required by the guidelines.
+
+## Rust-specific guidelines
+- Install `mimalloc` as the global allocator for binaries unless tests explicitly require the system allocator.
+- Replace any `#[allow(...)]` attributes with `#[expect(..., reason = "…")]` and remove `#[allow(unfulfilled_lint_expectations)]`
+  markers. Keep the reasons specific and meaningful.
+- Each `unsafe` block must be justified with an adjacent `// SAFETY:` comment that explains how the invariants from
+  `rust-guidelines.txt` are satisfied.
+- Keep test helper modules behind `#[cfg(any(test, feature = "test-util"))]` gates so they are not exported by default.
+- Treat `rust-guidelines.txt` as normative: new Rust code must be reviewed against its checklist before submission, and
+  deviations require an explicit maintainer approval noted in the change description.
 
 ## Protocol stability
 - Treat the public cache protocol as immutable. Do not modify `.proto` files or existing wire schemas.
