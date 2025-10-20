@@ -184,13 +184,8 @@ impl From<TwirpCacheMetadata> for cache::CacheMetadata {
 // TWIRP messages
 #[derive(Clone, Debug, Deserialize)]
 pub struct TwirpCreateReq {
-    #[expect(
-        dead_code,
-        reason = "Field required by the Twirp schema even when currently unused by the server"
-    )]
-    #[allow(unfulfilled_lint_expectations)]
-    #[serde(default)]
-    metadata: Option<TwirpCacheMetadata>,
+    #[serde(default, rename = "metadata")]
+    _metadata: Option<TwirpCacheMetadata>,
     pub key: String,
     pub version: String,
 }
@@ -200,7 +195,7 @@ impl TryFrom<cache::CreateCacheEntryRequest> for TwirpCreateReq {
 
     fn try_from(value: cache::CreateCacheEntryRequest) -> Result<Self, Self::Error> {
         Ok(Self {
-            metadata: value.metadata.map(Into::into),
+            _metadata: value.metadata.map(Into::into),
             key: value.key,
             version: value.version,
         })
@@ -224,23 +219,15 @@ impl From<TwirpCreateResp> for cache::CreateCacheEntryResponse {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct TwirpFinalizeReq {
-    #[expect(
-        dead_code,
-        reason = "Field required by the Twirp schema even when currently unused by the server"
-    )]
-    #[serde(default)]
-    metadata: Option<TwirpCacheMetadata>,
+    #[serde(default, rename = "metadata")]
+    _metadata: Option<TwirpCacheMetadata>,
     pub key: String,
-    #[expect(
-        dead_code,
-        reason = "Field required by the Twirp schema even when currently unused by the server"
-    )]
-    #[allow(unfulfilled_lint_expectations)]
     #[serde(
         default,
-        deserialize_with = "deserialize_option_i64_from_string_or_number"
+        deserialize_with = "deserialize_option_i64_from_string_or_number",
+        rename = "size_bytes"
     )]
-    size_bytes: Option<i64>,
+    _size_bytes: Option<i64>,
     pub version: String,
 }
 
@@ -254,9 +241,9 @@ impl TryFrom<cache::FinalizeCacheEntryUploadRequest> for TwirpFinalizeReq {
             Some(value.size_bytes)
         };
         Ok(Self {
-            metadata: value.metadata.map(Into::into),
+            _metadata: value.metadata.map(Into::into),
             key: value.key,
-            size_bytes,
+            _size_bytes: size_bytes,
             version: value.version,
         })
     }
@@ -285,13 +272,8 @@ impl From<TwirpFinalizeResp> for cache::FinalizeCacheEntryUploadResponse {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct TwirpGetUrlReq {
-    #[expect(
-        dead_code,
-        reason = "Field required by the Twirp schema even when currently unused by the server"
-    )]
-    #[allow(unfulfilled_lint_expectations)]
-    #[serde(default)]
-    metadata: Option<TwirpCacheMetadata>,
+    #[serde(default, rename = "metadata")]
+    _metadata: Option<TwirpCacheMetadata>,
     pub key: String,
     #[serde(default)]
     pub restore_keys: Vec<String>,
@@ -299,11 +281,13 @@ pub struct TwirpGetUrlReq {
 }
 
 impl TwirpGetUrlReq {
-    #[expect(dead_code, reason = "Helper only used in integration tests")]
-    #[allow(unfulfilled_lint_expectations)]
+    #[cfg_attr(
+        not(any(test, feature = "test-util")),
+        expect(dead_code, reason = "Helper only used in integration tests")
+    )]
     pub(crate) fn for_tests(key: String, version: String) -> Self {
         Self {
-            metadata: None,
+            _metadata: None,
             key,
             restore_keys: Vec::new(),
             version,
@@ -311,12 +295,15 @@ impl TwirpGetUrlReq {
     }
 }
 
+#[cfg(any(test, feature = "test-util"))]
+const _: fn(String, String) -> TwirpGetUrlReq = TwirpGetUrlReq::for_tests;
+
 impl TryFrom<cache::GetCacheEntryDownloadUrlRequest> for TwirpGetUrlReq {
     type Error = ApiError;
 
     fn try_from(value: cache::GetCacheEntryDownloadUrlRequest) -> Result<Self, Self::Error> {
         Ok(Self {
-            metadata: value.metadata.map(Into::into),
+            _metadata: value.metadata.map(Into::into),
             key: value.key,
             restore_keys: value.restore_keys,
             version: value.version,
@@ -371,6 +358,6 @@ mod tests {
     fn finalize_request_accepts_string_size_bytes() {
         let json = r#"{"metadata":null,"key":"key","size_bytes":"2048","version":"v1"}"#;
         let req: TwirpFinalizeReq = serde_json::from_str(json).expect("deserialize finalize");
-        assert_eq!(req.size_bytes, Some(2048));
+        assert_eq!(req._size_bytes, Some(2048));
     }
 }

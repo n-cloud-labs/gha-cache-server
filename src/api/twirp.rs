@@ -112,11 +112,13 @@ impl<T, P> TwirpRequest<T, P> {
         (self.data, self.format, self.origin)
     }
 
-    #[expect(
-        dead_code,
-        reason = "Only used in integration tests to craft JSON requests"
+    #[cfg_attr(
+        not(any(test, feature = "test-util")),
+        expect(
+            dead_code,
+            reason = "Only used in integration tests to craft JSON requests"
+        )
     )]
-    #[allow(unfulfilled_lint_expectations)]
     pub(crate) fn from_json(data: T) -> Self {
         Self {
             data,
@@ -126,6 +128,12 @@ impl<T, P> TwirpRequest<T, P> {
         }
     }
 }
+
+#[cfg(any(test, feature = "test-util"))]
+const _: fn(
+    TwirpGetUrlReq,
+) -> TwirpRequest<TwirpGetUrlReq, cache::GetCacheEntryDownloadUrlRequest> =
+    TwirpRequest::<TwirpGetUrlReq, cache::GetCacheEntryDownloadUrlRequest>::from_json;
 
 fn parse_content_type(value: &HeaderValue) -> Option<TwirpFormat> {
     let raw = value.to_str().ok()?.split(';').next()?.trim();
