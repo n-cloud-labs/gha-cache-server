@@ -16,6 +16,39 @@ use crate::meta;
 const FINALIZE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const MAX_SAFE_CACHE_NUMERIC_ID: i64 = 9_007_199_254_740_991;
 
+/// Captures a cache entry row loaded from the metadata database.
+///
+/// Cache entries record the authoritative state for each uploaded artifact,
+/// including ownership, scope, storage identifiers, and access timestamps. The
+/// struct mirrors the schema stored in `cache_entries` and enforces invariants
+/// such as using [`uuid::Uuid`] identifiers and monotonically increasing access
+/// timestamps managed by the database layer.
+///
+/// # Examples
+/// ```
+/// use chrono::DateTime;
+/// use chrono::Utc;
+/// use gha_cache_server::meta::CacheEntry;
+/// use uuid::Uuid;
+///
+/// let timestamp = DateTime::<Utc>::from_timestamp(0, 0).expect("valid timestamp");
+/// let entry = CacheEntry {
+///     id: Uuid::nil(),
+///     org: "octo-org".into(),
+///     repo: "gha-cache".into(),
+///     key: "ubuntu-latest".into(),
+///     version: "v1".into(),
+///     scope: "actions".into(),
+///     size_bytes: 1024,
+///     checksum: Some("abc123".into()),
+///     storage_key: "cache/abc123".into(),
+///     created_at: timestamp,
+///     last_access_at: timestamp,
+///     ttl_seconds: 3600,
+/// };
+/// assert_eq!(entry.repo, "gha-cache");
+/// assert_eq!(entry.ttl_seconds, 3600);
+/// ```
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CacheEntry {
     pub id: Uuid,
