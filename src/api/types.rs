@@ -143,9 +143,13 @@ impl From<TwirpCacheMetadata> for cache::CacheMetadata {
 // TWIRP messages
 #[derive(Clone, Debug, Deserialize)]
 pub struct TwirpCreateReq {
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "Field required by the Twirp schema even when currently unused by the server"
+    )]
+    #[allow(unfulfilled_lint_expectations)]
     #[serde(default)]
-    pub metadata: Option<TwirpCacheMetadata>,
+    metadata: Option<TwirpCacheMetadata>,
     pub key: String,
     pub version: String,
 }
@@ -179,16 +183,23 @@ impl From<TwirpCreateResp> for cache::CreateCacheEntryResponse {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct TwirpFinalizeReq {
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "Field required by the Twirp schema even when currently unused by the server"
+    )]
     #[serde(default)]
-    pub metadata: Option<TwirpCacheMetadata>,
+    metadata: Option<TwirpCacheMetadata>,
     pub key: String,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "Field required by the Twirp schema even when currently unused by the server"
+    )]
+    #[allow(unfulfilled_lint_expectations)]
     #[serde(
         default,
         deserialize_with = "deserialize_option_i64_from_string_or_number"
     )]
-    pub size_bytes: Option<i64>,
+    size_bytes: Option<i64>,
     pub version: String,
 }
 
@@ -233,13 +244,30 @@ impl From<TwirpFinalizeResp> for cache::FinalizeCacheEntryUploadResponse {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct TwirpGetUrlReq {
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "Field required by the Twirp schema even when currently unused by the server"
+    )]
+    #[allow(unfulfilled_lint_expectations)]
     #[serde(default)]
-    pub metadata: Option<TwirpCacheMetadata>,
+    metadata: Option<TwirpCacheMetadata>,
     pub key: String,
     #[serde(default)]
     pub restore_keys: Vec<String>,
     pub version: String,
+}
+
+impl TwirpGetUrlReq {
+    #[expect(dead_code, reason = "Helper only used in integration tests")]
+    #[allow(unfulfilled_lint_expectations)]
+    pub(crate) fn for_tests(key: String, version: String) -> Self {
+        Self {
+            metadata: None,
+            key,
+            restore_keys: Vec::new(),
+            version,
+        }
+    }
 }
 
 impl TryFrom<cache::GetCacheEntryDownloadUrlRequest> for TwirpGetUrlReq {
