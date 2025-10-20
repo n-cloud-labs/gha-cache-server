@@ -340,7 +340,6 @@ pub async fn touch_entry(
     Ok(())
 }
 
-#[allow(dead_code)]
 pub async fn delete_entry(
     pool: &AnyPool,
     driver: DatabaseDriver,
@@ -354,7 +353,6 @@ pub async fn delete_entry(
     Ok(())
 }
 
-#[allow(dead_code)]
 pub async fn expired_entries(
     pool: &AnyPool,
     driver: DatabaseDriver,
@@ -388,17 +386,6 @@ FROM cache_entries WHERE last_access_at + ttl_seconds < ? ORDER BY last_access_a
     rows.into_iter().map(map_cache_entry).collect()
 }
 
-#[allow(dead_code)]
-pub async fn expired_entry_ids(
-    pool: &AnyPool,
-    driver: DatabaseDriver,
-    now: DateTime<Utc>,
-) -> Result<Vec<Uuid>, sqlx::Error> {
-    let entries = expired_entries(pool, driver, now, None).await?;
-    Ok(entries.into_iter().map(|entry| entry.id).collect())
-}
-
-#[allow(dead_code)]
 pub async fn total_occupancy(pool: &AnyPool, driver: DatabaseDriver) -> Result<i64, sqlx::Error> {
     let query = rewrite_placeholders(
         "SELECT COALESCE(SUM(size_bytes), 0) FROM cache_entries",
@@ -408,7 +395,6 @@ pub async fn total_occupancy(pool: &AnyPool, driver: DatabaseDriver) -> Result<i
     Ok(total)
 }
 
-#[allow(dead_code)]
 pub async fn list_entries_ordered(
     pool: &AnyPool,
     driver: DatabaseDriver,
@@ -433,7 +419,10 @@ pub async fn list_entries_ordered(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Inserts need all cache entry fields"
+)]
 pub async fn create_entry(
     pool: &AnyPool,
     driver: DatabaseDriver,

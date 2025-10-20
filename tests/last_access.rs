@@ -10,15 +10,13 @@ use axum::{
 use bytes::Bytes;
 use futures::stream;
 use gha_cache_server::api::path::encode_path_segment;
-use gha_cache_server::api::proto::cache;
 use gha_cache_server::api::proxy::ProxyHttpClient;
-use gha_cache_server::api::twirp::TwirpRequest;
-use gha_cache_server::api::types::TwirpGetUrlReq;
 use gha_cache_server::api::{download, twirp, upload};
 use gha_cache_server::config::DatabaseDriver;
 use gha_cache_server::http::AppState;
 use gha_cache_server::meta::{self, CacheEntry};
 use gha_cache_server::storage::{BlobDownloadStream, BlobStore, PresignedUrl};
+use gha_cache_server::test_support::twirp_get_url_request;
 use http::{HeaderMap, HeaderValue, Request, header};
 use http_body_util::BodyExt;
 use sqlx::AnyPool;
@@ -215,14 +213,7 @@ async fn twirp_download_url_updates_last_access() {
     set_last_access(&pool, entry.id, 2).await;
 
     let state = build_state(pool.clone(), TestStore::without_presign(TEST_URL), false);
-    let request = TwirpGetUrlReq {
-        metadata: None,
-        key: entry.key.clone(),
-        restore_keys: Vec::new(),
-        version: entry.version.clone(),
-    };
-
-    let request = TwirpRequest::<_, cache::GetCacheEntryDownloadUrlRequest>::from_json(request);
+    let request = twirp_get_url_request(entry.key.clone(), entry.version.clone());
 
     let response = twirp::get_cache_entry_download_url(State(state), request)
         .await

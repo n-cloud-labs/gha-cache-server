@@ -112,8 +112,12 @@ impl<T, P> TwirpRequest<T, P> {
         (self.data, self.format, self.origin)
     }
 
-    #[allow(dead_code)]
-    pub fn from_json(data: T) -> Self {
+    #[expect(
+        dead_code,
+        reason = "Only used in integration tests to craft JSON requests"
+    )]
+    #[allow(unfulfilled_lint_expectations)]
+    pub(crate) fn from_json(data: T) -> Self {
         Self {
             data,
             format: TwirpFormat::Json,

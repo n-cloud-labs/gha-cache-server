@@ -46,6 +46,5 @@ pub trait BlobStore: Send + Sync + 'static {
 
     async fn get(&self, key: &str) -> anyhow::Result<Option<BlobDownloadStream>>;
 
-    #[allow(dead_code)]
     async fn delete(&self, key: &str) -> anyhow::Result<()>;
 }
