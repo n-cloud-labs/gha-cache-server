@@ -399,6 +399,20 @@ impl BlobStore for FsStore {
     }
 }
 
+#[cfg(unix)]
+fn advise_drop_from_cache(fd: std::os::unix::io::RawFd) -> std::io::Result<()> {
+    // SAFETY: `fd` comes from `File::as_raw_fd`, so it refers to a live file
+    // descriptor for the duration of the call. Passing zero for the offset and
+    // length requests the kernel to apply the advice to the entire file, which
+    // is permitted by POSIX, and `POSIX_FADV_DONTNEED` is a valid advice flag.
+    let result = unsafe { libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_DONTNEED) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::from_raw_os_error(result))
+    }
+}
+
 fn drop_page_cache_blocking(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -407,11 +421,7 @@ fn drop_page_cache_blocking(path: &Path) -> std::io::Result<()> {
 
         match File::open(path) {
             Ok(file) => {
-                let fd = file.as_raw_fd();
-                let result = unsafe { libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_DONTNEED) };
-                if result != 0 {
-                    return Err(std::io::Error::from_raw_os_error(result));
-                }
+                advise_drop_from_cache(file.as_raw_fd())?;
             }
             Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
             Err(err) => return Err(err),
