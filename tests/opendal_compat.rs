@@ -1,3 +1,6 @@
+#[cfg(not(any(test, feature = "test-util")))]
+compile_error!("Enable the `test-util` feature to run these tests outside `cargo test`.");
+
 use std::ffi::{OsStr, OsString};
 use std::sync::Arc;
 use std::time::Duration;

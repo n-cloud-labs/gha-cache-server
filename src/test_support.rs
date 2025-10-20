@@ -1,3 +1,5 @@
+#![cfg(any(test, feature = "test-util"))]
+
 use crate::api::proto::cache;
 use crate::api::twirp::TwirpRequest;
 use crate::api::types::TwirpGetUrlReq;
