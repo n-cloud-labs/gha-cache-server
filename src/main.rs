@@ -9,6 +9,13 @@ mod meta;
 mod obs;
 mod storage;
 
+#[cfg(not(test))]
+use mimalloc::MiMalloc;
+
+#[cfg(not(test))]
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
 use axum::Router;
 use clap::{Parser, Subcommand};
 use sqlx::{
