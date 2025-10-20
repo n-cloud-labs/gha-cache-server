@@ -533,6 +533,33 @@ impl CountingAllocator {
         }
     }
 
+    fn system_alloc(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: `GlobalAlloc::alloc` only receives well-formed layouts, so forwarding
+        // the layout to the system allocator upholds its requirements.
+        unsafe { self.system.alloc(layout) }
+    }
+
+    fn system_alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: `GlobalAlloc::alloc_zeroed` has the same layout guarantees as
+        // `alloc`, so the system allocator may zero-initialize the requested block.
+        unsafe { self.system.alloc_zeroed(layout) }
+    }
+
+    fn system_dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: The pointer and layout are supplied by `GlobalAlloc::dealloc` and
+        // therefore describe a block that originated from this allocator with the
+        // matching layout; the measurement guard only affects bookkeeping outside of
+        // the deallocation call.
+        unsafe { self.system.dealloc(ptr, layout) }
+    }
+
+    fn system_realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        // SAFETY: The pointer and layout identify an allocation provided by this
+        // allocator, and `new_size` comes from the caller of `GlobalAlloc::realloc`,
+        // satisfying the system allocator's contract for resizing the block.
+        unsafe { self.system.realloc(ptr, layout, new_size) }
+    }
+
     fn scoped(&'static self) -> MeasurementGuard {
         let lock = HEAP_MEASUREMENT_LOCK
             .lock()
@@ -594,7 +621,7 @@ impl Default for CountingAllocator {
 #[cfg(test)]
 unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let ptr = unsafe { self.system.alloc(layout) };
+        let ptr = self.system_alloc(layout);
         if !ptr.is_null() && self.should_track() {
             self.add_allocation(layout.size());
         }
@@ -602,7 +629,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        let ptr = unsafe { self.system.alloc_zeroed(layout) };
+        let ptr = self.system_alloc_zeroed(layout);
         if !ptr.is_null() && self.should_track() {
             self.add_allocation(layout.size());
         }
@@ -613,11 +640,11 @@ unsafe impl GlobalAlloc for CountingAllocator {
         if self.should_track() {
             self.remove_allocation(layout.size());
         }
-        unsafe { self.system.dealloc(ptr, layout) };
+        self.system_dealloc(ptr, layout);
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        let new_ptr = unsafe { self.system.realloc(ptr, layout, new_size) };
+        let new_ptr = self.system_realloc(ptr, layout, new_size);
         if !new_ptr.is_null() && self.should_track() {
             let old_size = layout.size();
             if new_size >= old_size {
